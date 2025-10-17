@@ -1,0 +1,64 @@
+# ========================
+# Python / Trading Bot
+# ========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.db
+*.sqlite3
+
+# ========================
+# Virtual environments
+# ========================
+.venv/
+env/
+venv/
+*/.venv/
+*/env/
+*/venv/
+
+# ========================
+# IDE / Editor files
+# ========================
+.vscode/
+.idea/
+*.swp
+
+# ========================
+# System files
+# ========================
+.DS_Store
+Thumbs.db
+
+# ========================
+# Config / Credentials
+# ========================
+.env
+*.env
+.env.*
+*.ini
+*.cfg
+*.json
+Pipfile
+Pipfile.lock
+
+# ========================
+# Data / Output
+# ========================
+*.csv
+*.xlsx
+*/**/*.csv
+*/**/*.xlsx
+backtests/
+results/
+logs/
+
+# ========================
+# MetaTrader / Build
+# ========================
+MQL4/
+MQL5/
+*.ex4
+*.ex5
