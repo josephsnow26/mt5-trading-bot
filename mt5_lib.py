@@ -5,8 +5,9 @@ import os, time
 
 
 class TradingStrategy:
-    def __init__(self, data):
+    def __init__(self, data, strategy = 'moving_average'):
         self.data = data
+        self.strategy = strategy
 
     def rsi_strategy(self):
         """Simple RSI strategy that generates buy/sell signals."""
@@ -27,6 +28,45 @@ class TradingStrategy:
         else:
             return None
 
+    def moving_average_strategy(self, fast_window=10, slow_window=50):
+        """Simple Moving Average crossover strategy (with debug prints)."""
+        data = self.data
+        if data.empty:
+            return None
+
+        # Compute moving averages
+        data["ma_fast"] = data["close"].rolling(window=fast_window).mean()
+        data["ma_slow"] = data["close"].rolling(window=slow_window).mean()
+
+        last = data.iloc[-1]
+        prev = data.iloc[-2]
+
+        # ✅ Debug prints
+        print(f"MA Fast ({fast_window}): {last['ma_fast']:.5f}")
+        print(f"MA Slow ({slow_window}): {last['ma_slow']:.5f}")
+
+        # Detect crossover
+        if prev["ma_fast"] < prev["ma_slow"] and last["ma_fast"] > last["ma_slow"]:
+            print("📈 Crossover detected: BUY signal")
+            return "buy"
+        elif prev["ma_fast"] > prev["ma_slow"] and last["ma_fast"] < last["ma_slow"]:
+            print("📉 Crossover detected: SELL signal")
+            return "sell"
+        else:
+            print("⏸ No crossover signal")
+            return None
+
+    def run_strategy(self):
+        """Run whichever strategy is selected and print which one."""
+        print(f"\n🚀 Running strategy: {self.strategy}")
+
+        if self.strategy == 'rsi':
+            return self.rsi_strategy()
+        elif self.strategy == 'moving_average':
+            return self.moving_average_strategy()
+        else:
+            print(f"⚠️ Unknown strategy '{self.strategy}'")
+            return None
 
 class MetaTraderConfig:
 
@@ -171,7 +211,7 @@ class MetaTraderConfig:
         print(f"✅ File saved successfully: {filepath}")
         return filepath
 
-    def execute_trade(self, symbol, signal=None, lot=0.01, deviation=10,sl_pips=None, tp_pips=None):
+    def execute_trade(self, symbol, signal=None, lot=0.01, deviation=10,sl_pips=30, tp_pips=90):
         """Executes a buy or sell order in MetaTrader 5."""
         # Get all open trades
         open_positions = MetaTrader5.positions_get()
@@ -183,6 +223,7 @@ class MetaTraderConfig:
 
         if symbol in open_symbols:
             print(f"⚠️ {symbol} already has an open trade")
+            return 
         else:
             print(f"✅ Can trade {symbol}")
 
@@ -204,6 +245,7 @@ class MetaTraderConfig:
         trade_risk = self.calculate_trade_risk(symbol, signal, price, lot=lot, sl_pips=sl_pips, tp_pips=tp_pips)
         sl = trade_risk.get("sl_price")
         tp = trade_risk.get("tp_price")
+        print(sl,tp,price)
 
         request = {
             "action": MetaTrader5.TRADE_ACTION_DEAL,
@@ -237,9 +279,9 @@ class MetaTraderConfig:
 
             for symbol in symbols:
                 data = self.get_market_data_rate(symbol=symbol, timeframe=timeframe)
-                trading_strategy = TradingStrategy(data=data)
+                trading_strategy = TradingStrategy(data=data,strategy="rsi")
 
-                signal = trading_strategy.rsi_strategy()
+                signal = trading_strategy.run_strategy()
 
                 if signal:
                     print(f"{symbol}: Signal = {signal.upper()}")
@@ -252,9 +294,11 @@ class MetaTraderConfig:
 
     def calculate_trade_risk(self, symbol, signal, entry_price, lot=0.01, sl_pips=None, tp_pips=None):
         """
-        Calculates Stop Loss and Take Profit prices and potential gain/loss in USD dynamically.
-        
-        Returns a dict:
+        Calculates SL/TP prices and potential gain/loss in USD, safely for FX, metals, and crypto.
+
+        sl_pips / tp_pips can be in price units (USD for BTC/USD, XAU/USD) or pips for FX.
+
+        Returns:
             {
                 "sl_price": ...,
                 "tp_price": ...,
@@ -262,42 +306,52 @@ class MetaTraderConfig:
                 "potential_gain_usd": ...
             }
         """
-        import MetaTrader5 as mt5
 
-        symbol_info = mt5.symbol_info(symbol)
-        if symbol_info is None:
+        info = MetaTrader5.symbol_info(symbol)
+        if info is None:
             raise ValueError(f"Symbol info not found for {symbol}")
 
-        point = symbol_info.point
+        point = info.point
+        min_stop = info.trade_stops_level * point  # broker minimum distance
+        tick_size = info.trade_tick_size
 
-        # Dynamic pip value calculation for Forex (assuming USD account)
-        # Standard lot = 100,000 units, 1 pip = 0.0001 for most pairs except JPY
-        if symbol.endswith("JPY"):
-            pip_value_per_standard_lot = 1000  # for JPY pairs
+        # Convert sl_pips to at least min_stop
+        if sl_pips is None:
+            sl_pips = min_stop * 2  # default 2x minimum distance
         else:
-            pip_value_per_standard_lot = 10  # for most USD pairs
+            sl_pips = max(sl_pips, min_stop)
 
-        pip_value = pip_value_per_standard_lot * (lot / 1.0)  # adjust for lot size
+        if tp_pips is None:
+            tp_pips = sl_pips * 2  # default 2:1 reward/risk
+        else:
+            tp_pips = max(tp_pips, min_stop)
 
-        # Calculate absolute SL and TP prices
+        # Calculate SL/TP based on signal
         if signal.lower() == "buy":
-            sl_price = entry_price - sl_pips * point if sl_pips is not None else None
-            tp_price = entry_price + tp_pips * point if tp_pips is not None else None
+            sl_price = entry_price - sl_pips
+            tp_price = entry_price + tp_pips
         elif signal.lower() == "sell":
-            sl_price = entry_price + sl_pips * point if sl_pips is not None else None
-            tp_price = entry_price - tp_pips * point if tp_pips is not None else None
+            sl_price = entry_price + sl_pips
+            tp_price = entry_price - tp_pips
         else:
             raise ValueError("Signal must be 'buy' or 'sell'")
 
-        # Calculate potential gain/loss in USD
-        potential_loss_usd = (abs(entry_price - sl_price) / point * pip_value) if sl_price else None
-        potential_gain_usd = (abs(tp_price - entry_price) / point * pip_value) if tp_price else None
+        # Round SL/TP to nearest tick size
+        sl_price = round(sl_price / tick_size) * tick_size
+        tp_price = round(tp_price / tick_size) * tick_size
+
+        # Calculate approximate potential gain/loss in USD
+        contract_size = info.trade_contract_size
+        pip_value = contract_size * point * lot  # generic for all symbols
+
+        potential_loss_usd = abs(entry_price - sl_price) / point * pip_value
+        potential_gain_usd = abs(tp_price - entry_price) / point * pip_value
 
         return {
             "sl_price": sl_price,
             "tp_price": tp_price,
-            "potential_loss_usd": round(potential_loss_usd, 2) if potential_loss_usd else None,
-            "potential_gain_usd": round(potential_gain_usd, 2) if potential_gain_usd else None,
+            "potential_loss_usd": round(potential_loss_usd, 2),
+            "potential_gain_usd": round(potential_gain_usd, 2),
         }
 
     
@@ -325,21 +379,24 @@ class MetaTraderConfig:
             # BUY trade
             if pos.type == MetaTrader5.ORDER_TYPE_BUY:
                 if pos.sl is None:
-                    sl_distance = float('inf')  # force first SL setting
+                    sl_pips = float('inf')  # force first SL setting
                 else:
-                    sl_distance = current_price - pos.sl  # distance from current price to SL
+                    sl_pips = current_price - pos.sl  # distance from current price to SL
 
-                if sl_distance >= distance_pips * point_multiplier:
+                if sl_pips >= distance_pips * point_multiplier:
                     # Move SL forward by move_pips
                     new_sl = (pos.sl or current_price) + move_pips * point_multiplier
                     if new_sl > (pos.sl or 0):
-                        result = MetaTrader5.order_modify(
-                            ticket=pos.ticket,
-                            price=pos.price_open,
-                            sl=new_sl,
-                            tp=pos.tp,
-                            deviation=deviation
-                        )
+                        request = {
+                            "action": MetaTrader5.TRADE_ACTION_SLTP,
+                            "symbol": symbol,
+                            "position": pos.ticket,
+                            "sl": new_sl,
+                            "tp": pos.tp,
+                            "deviation": deviation,
+                            "comment": "Trailing stop update",
+                        }
+                        result = MetaTrader5.order_send(request)
                         if result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
                             print(f"✅ Trailing SL moved up for BUY {symbol} to {new_sl}")
                         else:
@@ -348,20 +405,23 @@ class MetaTraderConfig:
             # SELL trade
             elif pos.type == MetaTrader5.ORDER_TYPE_SELL:
                 if pos.sl is None:
-                    sl_distance = float('inf')
+                    sl_pips = float('inf')
                 else:
-                    sl_distance = pos.sl - current_price  # distance from SL to current price
+                    sl_pips = pos.sl - current_price  # distance from SL to current price
 
-                if sl_distance >= distance_pips * point_multiplier:
+                if sl_pips >= distance_pips * point_multiplier:
                     new_sl = (pos.sl or current_price) - move_pips * point_multiplier
                     if new_sl < (pos.sl or float('inf')):
-                        result = MetaTrader5.order_modify(
-                            ticket=pos.ticket,
-                            price=pos.price_open,
-                            sl=new_sl,
-                            tp=pos.tp,
-                            deviation=deviation
-                        )
+                        request = {
+                            "action": MetaTrader5.TRADE_ACTION_SLTP,
+                            "symbol": symbol,
+                            "position": pos.ticket,
+                            "sl": new_sl,
+                            "tp": pos.tp,
+                            "deviation": deviation,
+                            "comment": "Trailing stop update",
+                        }
+                        result = MetaTrader5.order_send(request)
                         if result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
                             print(f"✅ Trailing SL moved down for SELL {symbol} to {new_sl}")
                         else:
