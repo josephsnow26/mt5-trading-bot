@@ -41,8 +41,7 @@ meta_trader_config.start_mt5()
 
 
 
-meta_trader_config.run_trading_loop(symbols = weekend_symbols, timeframe=MetaTrader5.TIMEFRAME_M1, delay=50)
-
+meta_trader_config.run_trading_loop(symbols = weekday_symbols, timeframe=MetaTrader5.TIMEFRAME_M1, delay=50)
 
 # Get data by date range
 # meta_trader_config.get_market_data_date_range(

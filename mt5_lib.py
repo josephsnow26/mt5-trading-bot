@@ -293,11 +293,11 @@ class MetaTraderConfig:
             time.sleep(delay)
 
 
-    def calculate_trade_risk(self, symbol, signal, entry_price, lot=0.01, sl_pips=None, tp_pips=None):
+    def calculate_trade_risk(self, symbol, signal, entry_price, lot=0.01, sl_pips=40, tp_pips=200):
         """
         Calculates SL/TP prices and potential gain/loss in USD, safely for FX, metals, and crypto.
 
-        sl_pips / tp_pips can be in price units (USD for BTC/USD, XAU/USD) or pips for FX.
+        sl_pips / tp_pips are in pips (for FX) or price units (for non-FX).
 
         Returns:
             {
@@ -307,46 +307,53 @@ class MetaTraderConfig:
                 "potential_gain_usd": ...
             }
         """
-
         info = MetaTrader5.symbol_info(symbol)
         if info is None:
             raise ValueError(f"Symbol info not found for {symbol}")
 
         point = info.point
-        min_stop = info.trade_stops_level * point  # broker minimum distance
+        contract_size = info.trade_contract_size
         tick_size = info.trade_tick_size
+        min_stop = info.trade_stops_level * point
 
-        # Convert sl_pips to at least min_stop
-        if sl_pips is None:
-            sl_pips = min_stop * 2  # default 2x minimum distance
+        # --- Detect pip size automatically ---
+        # Forex (EURUSD, GBPUSD) usually 0.0001, JPY pairs 0.01
+        if symbol.endswith(("USD", "USDm")) and point == 0.00001:
+            pip_size = 0.0001
+        elif "JPY" in symbol:
+            pip_size = 0.01
         else:
-            sl_pips = max(sl_pips, min_stop)
+            pip_size = point  # metals/crypto use price unit as pip
 
-        if tp_pips is None:
-            tp_pips = sl_pips * 2  # default 2:1 reward/risk
+        # --- Convert pips to price distance ---
+        if sl_pips is not None:
+            sl_distance = sl_pips * pip_size
         else:
-            tp_pips = max(tp_pips, min_stop)
+            sl_distance = min_stop * 2
 
-        # Calculate SL/TP based on signal
+        if tp_pips is not None:
+            tp_distance = tp_pips * pip_size
+        else:
+            tp_distance = sl_distance * 2  # 2:1 R:R
+
+        # --- SL/TP based on signal ---
         if signal.lower() == "buy":
-            sl_price = entry_price - sl_pips
-            tp_price = entry_price + tp_pips
+            sl_price = entry_price - sl_distance
+            tp_price = entry_price + tp_distance
         elif signal.lower() == "sell":
-            sl_price = entry_price + sl_pips
-            tp_price = entry_price - tp_pips
+            sl_price = entry_price + sl_distance
+            tp_price = entry_price - tp_distance
         else:
             raise ValueError("Signal must be 'buy' or 'sell'")
 
-        # Round SL/TP to nearest tick size
+        # --- Round to tick size ---
         sl_price = round(sl_price / tick_size) * tick_size
         tp_price = round(tp_price / tick_size) * tick_size
 
-        # Calculate approximate potential gain/loss in USD
-        contract_size = info.trade_contract_size
-        pip_value = contract_size * point * lot  # generic for all symbols
-
-        potential_loss_usd = abs(entry_price - sl_price) / point * pip_value
-        potential_gain_usd = abs(tp_price - entry_price) / point * pip_value
+        # --- USD risk/gain estimation ---
+        pip_value = contract_size * pip_size * lot
+        potential_loss_usd = abs(entry_price - sl_price) / pip_size * pip_value
+        potential_gain_usd = abs(tp_price - entry_price) / pip_size * pip_value
 
         return {
             "sl_price": sl_price,
@@ -356,7 +363,7 @@ class MetaTraderConfig:
         }
 
     
-    def update_trailing_stop(self, distance_pips=40, move_pips=5, deviation=10):
+    def update_trailing_stop(self, distance_pips=50, move_pips=7, deviation=10):
         """
         Updates SL for all open trades dynamically.
         
@@ -382,6 +389,7 @@ class MetaTraderConfig:
                     sl_pips = float('inf')  # force first SL setting
                 else:
                     sl_pips = current_price - pos.sl  # distance from current price to SL
+                print(sl_pips)
                
 
                 if sl_pips >= distance_pips:
@@ -409,6 +417,9 @@ class MetaTraderConfig:
                     sl_pips = float('inf')
                 else:
                     sl_pips = pos.sl - current_price  # distance from SL to current price
+
+                print(sl_pips)
+
 
                 if sl_pips >= distance_pips:
                     new_sl = (pos.sl or current_price) - move_pips
