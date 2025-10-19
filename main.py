@@ -1,7 +1,6 @@
 from mt5_lib import MetaTraderConfig
 import MetaTrader5
 from decouple import config
-from datetime import datetime
 
 # Weekday popular MT5 symbols
 weekday_symbols = [
@@ -42,7 +41,7 @@ meta_trader_config.start_mt5()
 
 
 
-meta_trader_config.run_trading_loop(symbols = ["BTCUSDm", "XAUUSDm"], timeframe=MetaTrader5.TIMEFRAME_M1, delay=10)
+meta_trader_config.run_trading_loop(symbols = weekend_symbols, timeframe=MetaTrader5.TIMEFRAME_M1, delay=50)
 
 
 # Get data by date range

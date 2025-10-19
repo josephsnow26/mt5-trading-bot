@@ -28,7 +28,7 @@ class TradingStrategy:
         else:
             return None
 
-    def moving_average_strategy(self, fast_window=10, slow_window=50):
+    def moving_average_strategy(self, fast_window=30, slow_window=100):
         """Simple Moving Average crossover strategy (with debug prints)."""
         data = self.data
         if data.empty:
@@ -44,6 +44,7 @@ class TradingStrategy:
         # ✅ Debug prints
         print(f"MA Fast ({fast_window}): {last['ma_fast']:.5f}")
         print(f"MA Slow ({slow_window}): {last['ma_slow']:.5f}")
+        
 
         # Detect crossover
         if prev["ma_fast"] < prev["ma_slow"] and last["ma_fast"] > last["ma_slow"]:
@@ -148,7 +149,7 @@ class MetaTraderConfig:
         return data
 
     def get_market_data_rate(
-        self, timeframe=None, rate=100, symbol=None, download=None
+        self, timeframe=None, rate=120, symbol=None, download=None
     ):
         """
         Fetch market data (historical candles) from MetaTrader 5.
@@ -211,7 +212,7 @@ class MetaTraderConfig:
         print(f"✅ File saved successfully: {filepath}")
         return filepath
 
-    def execute_trade(self, symbol, signal=None, lot=0.01, deviation=10,sl_pips=30, tp_pips=90):
+    def execute_trade(self, symbol, signal=None, lot=0.01, deviation=10,sl_pips=40, tp_pips=200):
         """Executes a buy or sell order in MetaTrader 5."""
         # Get all open trades
         open_positions = MetaTrader5.positions_get()
@@ -268,7 +269,7 @@ class MetaTraderConfig:
         else:
             print(f"✅ Trade executed for {symbol}: {signal.upper()} at {price}")
 
-    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, delay=60):
+    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, delay=50):
         """Continuously fetch data, apply strategy, and trade."""
         while True:
             
@@ -355,7 +356,7 @@ class MetaTraderConfig:
         }
 
     
-    def update_trailing_stop(self, distance_pips=20, move_pips=5, deviation=10):
+    def update_trailing_stop(self, distance_pips=40, move_pips=5, deviation=10):
         """
         Updates SL for all open trades dynamically.
         
@@ -369,7 +370,6 @@ class MetaTraderConfig:
 
         for pos in positions:
             symbol = pos.symbol
-            point_multiplier = 0.0001 if not symbol.endswith("JPY") else 0.01
 
             tick = MetaTrader5.symbol_info_tick(symbol)
             if tick is None:
@@ -382,10 +382,11 @@ class MetaTraderConfig:
                     sl_pips = float('inf')  # force first SL setting
                 else:
                     sl_pips = current_price - pos.sl  # distance from current price to SL
+               
 
-                if sl_pips >= distance_pips * point_multiplier:
+                if sl_pips >= distance_pips:
                     # Move SL forward by move_pips
-                    new_sl = (pos.sl or current_price) + move_pips * point_multiplier
+                    new_sl = (pos.sl or current_price) + move_pips
                     if new_sl > (pos.sl or 0):
                         request = {
                             "action": MetaTrader5.TRADE_ACTION_SLTP,
@@ -409,8 +410,8 @@ class MetaTraderConfig:
                 else:
                     sl_pips = pos.sl - current_price  # distance from SL to current price
 
-                if sl_pips >= distance_pips * point_multiplier:
-                    new_sl = (pos.sl or current_price) - move_pips * point_multiplier
+                if sl_pips >= distance_pips:
+                    new_sl = (pos.sl or current_price) - move_pips
                     if new_sl < (pos.sl or float('inf')):
                         request = {
                             "action": MetaTrader5.TRADE_ACTION_SLTP,
