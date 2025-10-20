@@ -379,22 +379,25 @@ class MetaTraderConfig:
             symbol = pos.symbol
 
             tick = MetaTrader5.symbol_info_tick(symbol)
+            info = MetaTrader5.symbol_info(symbol)
+
             if tick is None:
                 continue
             current_price = tick.bid if pos.type == MetaTrader5.ORDER_TYPE_BUY else tick.ask
+            point = info.point 
 
             # BUY trade
             if pos.type == MetaTrader5.ORDER_TYPE_BUY:
                 if pos.sl is None:
                     sl_pips = float('inf')  # force first SL setting
                 else:
-                    sl_pips = current_price - pos.sl  # distance from current price to SL
+                    sl_pips = (current_price - pos.sl) / point  # convert to pips
                 print(sl_pips)
                
 
                 if sl_pips >= distance_pips:
                     # Move SL forward by move_pips
-                    new_sl = (pos.sl or current_price) + move_pips
+                    new_sl = (pos.sl or current_price) + move_pips * point
                     if new_sl > (pos.sl or 0):
                         request = {
                             "action": MetaTrader5.TRADE_ACTION_SLTP,
@@ -416,13 +419,13 @@ class MetaTraderConfig:
                 if pos.sl is None:
                     sl_pips = float('inf')
                 else:
-                    sl_pips = pos.sl - current_price  # distance from SL to current price
+                    sl_pips = (pos.sl - current_price)/point  # distance from SL to current price
 
                 print(sl_pips)
 
 
                 if sl_pips >= distance_pips:
-                    new_sl = (pos.sl or current_price) - move_pips
+                    new_sl = ((pos.sl or current_price) - move_pips) *point
                     if new_sl < (pos.sl or float('inf')):
                         request = {
                             "action": MetaTrader5.TRADE_ACTION_SLTP,
