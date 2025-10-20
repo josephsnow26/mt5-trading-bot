@@ -212,7 +212,7 @@ class MetaTraderConfig:
         print(f"✅ File saved successfully: {filepath}")
         return filepath
 
-    def execute_trade(self, symbol, signal=None, lot=0.01, deviation=10,sl_pips=40, tp_pips=200):
+    def execute_trade(self, symbol, signal=None, lot=0.01, deviation=10,sl_pips=None, tp_pips=None):
         """Executes a buy or sell order in MetaTrader 5."""
         # Get all open trades
         open_positions = MetaTrader5.positions_get()
@@ -286,14 +286,14 @@ class MetaTraderConfig:
 
                 if signal:
                     print(f"{symbol}: Signal = {signal.upper()}")
-                    self.execute_trade(symbol, signal)
+                    self.execute_trade(symbol, signal,sl_pips=10,tp_pips=40)
                 else:
                     print(f"{symbol}: No trade signal.")
 
             time.sleep(delay)
 
 
-    def calculate_trade_risk(self, symbol, signal, entry_price, lot=0.01, sl_pips=40, tp_pips=200):
+    def calculate_trade_risk(self, symbol, signal, entry_price, lot=0.01, sl_pips=None, tp_pips=None):
         """
         Calculates SL/TP prices and potential gain/loss in USD, safely for FX, metals, and crypto.
 
@@ -363,12 +363,12 @@ class MetaTraderConfig:
         }
 
     
-    def update_trailing_stop(self, distance_pips=50, move_pips=7, deviation=10):
+    def update_trailing_stop(self, distance_pips=25, move_pips=10, deviation=10):
         """
-        Updates SL for all open trades dynamically.
-        
-        distance_pips: minimum number of pips current price must be away from SL before moving it
-        move_pips: number of pips to move the SL forward
+        Dynamically updates SL for all open trades.
+
+        distance_pips: minimum distance (in pips) between current price and SL before moving
+        move_pips: how many pips to move SL forward each time
         """
         positions = MetaTrader5.positions_get()
         if not positions:
@@ -377,28 +377,31 @@ class MetaTraderConfig:
 
         for pos in positions:
             symbol = pos.symbol
-
             tick = MetaTrader5.symbol_info_tick(symbol)
             info = MetaTrader5.symbol_info(symbol)
 
-            if tick is None:
+            if tick is None or info is None:
                 continue
-            current_price = tick.bid if pos.type == MetaTrader5.ORDER_TYPE_BUY else tick.ask
-            point = info.point 
 
-            # BUY trade
+            current_price = tick.bid if pos.type == MetaTrader5.ORDER_TYPE_BUY else tick.ask
+            point = info.point
+            move_distance = move_pips * 10 * point  # convert pips → price units
+
+            # ---------------- BUY TRADE ----------------
             if pos.type == MetaTrader5.ORDER_TYPE_BUY:
                 if pos.sl is None:
-                    sl_pips = float('inf')  # force first SL setting
+                    sl_distance_pips = float('inf')
                 else:
-                    sl_pips = (current_price - pos.sl) / point  # convert to pips
-                print(sl_pips)
-               
+                    sl_distance_pips = (current_price - pos.sl) / (10 * point)
 
-                if sl_pips >= distance_pips:
-                    # Move SL forward by move_pips
-                    new_sl = (pos.sl or current_price) + move_pips * point
-                    if new_sl > (pos.sl or 0):
+                print(f"BUY {symbol} | SL distance = {sl_distance_pips:.1f} pips | "
+                    f"SL={pos.sl} | Price={current_price}")
+
+                if sl_distance_pips >= distance_pips:
+                    new_sl = (pos.sl or current_price) + move_distance  # move SL upward
+                    print(f"➡️ Moving BUY SL from {pos.sl} → {new_sl} ({move_pips} pips)")
+
+                    if pos.sl is None or new_sl > pos.sl:
                         request = {
                             "action": MetaTrader5.TRADE_ACTION_SLTP,
                             "symbol": symbol,
@@ -410,23 +413,25 @@ class MetaTraderConfig:
                         }
                         result = MetaTrader5.order_send(request)
                         if result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
-                            print(f"✅ Trailing SL moved up for BUY {symbol} to {new_sl}")
+                            print(f"✅ BUY {symbol}: SL moved up to {new_sl}")
                         else:
                             print(f"❌ Failed to modify SL for BUY {symbol}: {result.comment}")
 
-            # SELL trade
+            # ---------------- SELL TRADE ----------------
             elif pos.type == MetaTrader5.ORDER_TYPE_SELL:
                 if pos.sl is None:
-                    sl_pips = float('inf')
+                    sl_distance_pips = float('inf')
                 else:
-                    sl_pips = (pos.sl - current_price)/point  # distance from SL to current price
+                    sl_distance_pips = (pos.sl - current_price) / (10 * point)
 
-                print(sl_pips)
+                print(f"SELL {symbol} | SL distance = {sl_distance_pips:.1f} pips | "
+                    f"SL={pos.sl} | Price={current_price}")
 
+                if sl_distance_pips >= distance_pips:
+                    new_sl = (pos.sl or current_price) - move_distance  # move SL downward
+                    print(f"➡️ Moving SELL SL from {pos.sl} → {new_sl} ({move_pips} pips)")
 
-                if sl_pips >= distance_pips:
-                    new_sl = ((pos.sl or current_price) - move_pips) *point
-                    if new_sl < (pos.sl or float('inf')):
+                    if pos.sl is None or new_sl < pos.sl:
                         request = {
                             "action": MetaTrader5.TRADE_ACTION_SLTP,
                             "symbol": symbol,
@@ -438,6 +443,6 @@ class MetaTraderConfig:
                         }
                         result = MetaTrader5.order_send(request)
                         if result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
-                            print(f"✅ Trailing SL moved down for SELL {symbol} to {new_sl}")
+                            print(f"✅ SELL {symbol}: SL moved down to {new_sl}")
                         else:
                             print(f"❌ Failed to modify SL for SELL {symbol}: {result.comment}")
