@@ -549,6 +549,9 @@ class MetaTraderConfig:
                     )
                 else:
                     print(f"{symbol}: No trade signal.")
+            
+            account_info = MetaTrader5.account_info()
+            print("💰 Balance:",f"${account_info.balance}")
 
             print(f"🕐 Delaying loop for {delay} seconds ({timeframe}) timeframe...\n")
             time.sleep(delay)
