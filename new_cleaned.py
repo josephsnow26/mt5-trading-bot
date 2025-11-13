@@ -2,17 +2,18 @@ import MetaTrader5
 import os, time
 import pandas as pd
 from ta.momentum import RSIIndicator
-from ta.trend import MACD, EMAIndicator, SMAIndicator
+from ta.trend import MACD, EMAIndicator
 from ta.volatility import BollingerBands
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta,timezone
 from symbols import get_symbols
+from strategy import TradingNewStrategy
 
 
 symbols_dict = get_symbols().get("symbols_dict")
 
 
 class TradingStrategy:
-    def __init__(self, data = None, balance=10000, risk_per_trade=0.02, strategy="hybrid"):
+    def __init__(self, data, balance=10000, risk_per_trade=0.02, strategy="hybrid"):
         """
         balance: initial account balance
         risk_per_trade: percentage of balance risked per trade
@@ -28,228 +29,133 @@ class TradingStrategy:
     # 🧠 INDICATOR CALCULATIONS
     # ------------------------------------------------------------
     def compute_indicators(self):
-        """
-        Compute indicators for both H1 and M5 (or main) dataframes.
-        - H1: SMA(100) for trend direction
-        - Main timeframe: RSI, EMA, MACD, Bollinger Bands
-        """
-        # === H1 Trend Data ===
-        data_H1 = self.data.get("data_H1", pd.DataFrame()).copy()
-        if not data_H1.empty:
-            data_H1["sma_100"] = SMAIndicator(data_H1["close"], window=100).sma_indicator()
-            self.data["data_H1"] = data_H1
-
-        # === Main timeframe indicators (e.g., M5) ===
-        df = self.data.get("data_M5", pd.DataFrame()).copy()
-        if not df.empty:
-            df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
-            df["ema_fast"] = EMAIndicator(df["close"], window=20).ema_indicator()
-            df["ema_slow"] = EMAIndicator(df["close"], window=50).ema_indicator()
-            df["sma_trend"] = df["close"].rolling(window=200).mean()
-
-            macd = MACD(df["close"])
-            df["macd"] = macd.macd()
-            df["macd_signal"] = macd.macd_signal()
-
-            bb = BollingerBands(df["close"], window=20, window_dev=2)
-            df["bb_upper"] = bb.bollinger_hband()
-            df["bb_lower"] = bb.bollinger_lband()
-            df["bb_mid"] = bb.bollinger_mavg()
-
-            self.data["data_M5"] = df
-
+        """Compute all indicators needed for decision."""
+        df = self.data.copy()
+        df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+        df["ema_fast"] = EMAIndicator(df["close"], window=20).ema_indicator()
+        df["ema_slow"] = EMAIndicator(df["close"], window=50).ema_indicator()
+        df["sma_trend"] = df["close"].rolling(window=200).mean()
+        macd = MACD(df["close"])
+        df["macd"] = macd.macd()
+        df["macd_signal"] = macd.macd_signal()
+        bb = BollingerBands(df["close"], window=20, window_dev=2)
+        df["bb_upper"] = bb.bollinger_hband()
+        df["bb_lower"] = bb.bollinger_lband()
+        df["bb_mid"] = bb.bollinger_mavg()
         return df
 
+    def compute_scalping_indicators(self):
+        """Compute fast indicators for scalping."""
+        df = self.data.copy()
+        df["ema_fast"] = EMAIndicator(df["close"], window=9).ema_indicator()
+        df["ema_slow"] = EMAIndicator(df["close"], window=21).ema_indicator()
+        df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+        bb = BollingerBands(df["close"], window=20, window_dev=2)
+        df["bb_upper"] = bb.bollinger_hband()
+        df["bb_lower"] = bb.bollinger_lband()
+        df["bb_mid"] = bb.bollinger_mavg()
+        return df
 
     # ------------------------------------------------------------
     # ⚙️ STRATEGIES
     # ------------------------------------------------------------
-  
 
-    def rsi_strategy(self):
+    def trend_momentum_strategy(self):
         """
-        RSI-based trading strategy:
-        - Determines overall trend from H1 using SMA(100)
-        - Uses RSI on M5 for entry signals
+        Simple but powerful ensemble:
+        - EMA crossover for direction
+        - RSI confirms momentum
+        - MACD confirms trend
+        - Price above/below SMA200 confirms major bias
+        - Bollinger breakout filters fake signals
         """
-        # === Compute & prepare indicators ===
-        self.compute_indicators()
-
-        data_H1 = self.data.get("data_H1", pd.DataFrame()).copy()
-        data_M5 = self.data.get("data_M5", pd.DataFrame()).copy()
-
-        if data_H1.empty or data_M5.empty:
-            print("⚠️ Insufficient data for RSI strategy.")
+        df = self.compute_indicators()
+        if len(df) < 3:
             return None
 
-        # === 1️⃣ Identify trend on H1 ===
-        last_h1 = data_H1.iloc[-1]
-        trend = "bullish" if last_h1["close"] > last_h1["sma_100"] else "bearish"
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-        # === 2️⃣ Get RSI from M5 ===
-        last_m5 = data_M5.iloc[-1]
-        rsi = last_m5["rsi"]
-
-        # === 3️⃣ Determine signal ===
-        if rsi < 30 and trend == "bullish":
-            signal = "buy"
-        elif rsi > 70 and trend == "bearish":
-            signal = "sell"
-        else:
-            signal = None
-
-        # === 4️⃣ Print diagnostic info ===
-        print("\n📊 RSI STRATEGY DIAGNOSTICS")
-        print(f"📅 Time (M5): {last_m5.name if hasattr(last_m5, 'name') else 'N/A'}")
-        print(f"Trend (H1): {trend.upper()}")
-        print(f"RSI (M5): {rsi:.2f}")
-        # print(f"H1 Close: {last_h1['close']:.5f}")
-        # print(f"SMA(100): {last_h1['sma_100']:.5f}")
-        print(f"Signal: {'✅ ' + signal.upper() if signal else '❌ No clear signal'}")
-
-        return signal
-
-    def rsi_exit_strategy(self, timeframe=MetaTrader5.TIMEFRAME_M5, rsi_period=14):
-        """
-        RSI-based exit strategy (independent of self.data)
-        - BUY: Exit when RSI > 70 and starts decreasing
-        - SELL: Exit when RSI < 30 and starts increasing
-        - Fetches live M5 data per symbol for accurate RSI confirmation
-        """
-        import pandas as pd
-        from ta.momentum import RSIIndicator
-
-        positions = MetaTrader5.positions_get()
-        if not positions:
-            print("⚠️ No open positions to evaluate for RSI exit.")
-            return []
-
-        exit_trades = []
-
-        print("\n🧭 RSI EXIT STRATEGY CHECK (live data per symbol)")
-        print(f"Total open positions: {len(positions)}\n")
-
-        for pos in positions:
-            symbol = pos.symbol
-            position_type = "buy" if pos.type == MetaTrader5.POSITION_TYPE_BUY else "sell"
-
-            # === Get live data for this symbol ===
-            rates = MetaTrader5.copy_rates_from_pos(symbol, timeframe, 0, 100)
-            if rates is None or len(rates) < 2:
-                print(f"⚠️ Could not retrieve enough M5 data for {symbol} — skipping.")
-                continue
-
-            df = pd.DataFrame(rates)
-            df["time"] = pd.to_datetime(df["time"], unit="s")
-
-            # === Compute RSI ===
-            df["rsi"] = RSIIndicator(close=df["close"], window=rsi_period).rsi()
-            if df["rsi"].isnull().any():
-                df = df.dropna(subset=["rsi"])
-            if len(df) < 2:
-                print(f"⚠️ Not enough valid RSI values for {symbol} — skipping.")
-                continue
-
-            rsi_prev = df["rsi"].iloc[-2]
-            rsi_now = df["rsi"].iloc[-1]
-
-            should_exit = False
-            trend_note = ""
-
-            # === BUY EXIT LOGIC ===
-            if position_type == "buy" and rsi_now > 70:
-                if rsi_prev < rsi_now:
-                    trend_note = "RSI still rising — holding for extended gains"
-                elif rsi_prev > rsi_now:
-                    should_exit = True
-                    trend_note = "RSI peaked and now falling — exit to secure profits"
-
-            # === SELL EXIT LOGIC ===
-            elif position_type == "sell" and rsi_now < 30:
-                if rsi_prev > rsi_now:
-                    trend_note = "RSI still falling — holding for extended downside"
-                elif rsi_prev < rsi_now:
-                    should_exit = True
-                    trend_note = "RSI bottomed and now rising — exit to secure profits"
-
-            status = "🚪 EXIT" if should_exit else "⏳ HOLD"
-            print(
-                f"🔹 {symbol}: {position_type.upper()} | RSI={rsi_now:.2f} (prev {rsi_prev:.2f}) | {status} — {trend_note}"
-            )
-
-            if should_exit:
-                trade_info = {
-                    "symbol": symbol,
-                    "ticket": pos.ticket,
-                    "position": position_type,
-                    "rsi": rsi_now,
-                    "exit_reason": "RSI reversal confirmation (70/30)",
-                }
-                exit_trades.append(trade_info)
-
-        # === Execute exits ===
-        if exit_trades:
-            print("\n⚙️ Executing RSI-based exits...\n")
-            for trade in exit_trades:
-                self.close_position(trade)
-                print(f"✅ Closed {trade['symbol']} ({trade['position'].upper()}) | RSI={trade['rsi']:.2f}")
-        else:
-            print("\n✅ All positions still valid — RSI trends not reversed yet.")
-
-        return exit_trades
-
-    
-
-    def close_position(self, trade):
-        """
-        Close a specific MT5 position by sending a reverse market order.
-        Args:
-            trade (dict): Contains 'symbol', 'ticket', and 'position' keys
-        """
-        symbol = trade["symbol"]
-        ticket = trade["ticket"]
-        position_type = trade["position"]
-
-        # Determine order type for closing
-        order_type = (
-            MetaTrader5.ORDER_TYPE_SELL
-            if position_type == "buy"
-            else MetaTrader5.ORDER_TYPE_BUY
+        # EMA crossover
+        bullish_cross = (
+            prev["ema_fast"] < prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
+        )
+        bearish_cross = (
+            prev["ema_fast"] > prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
         )
 
-        # Retrieve position volume
-        positions = MetaTrader5.positions_get(ticket=ticket)
-        if not positions:
-            print(f"⚠️ Position with ticket {ticket} not found (already closed?)")
-            return
+        # RSI
+        rsi = last["rsi"]
 
-        volume = positions[0].volume
+        # MACD
+        macd_up = last["macd"] > last["macd_signal"]
+        macd_down = last["macd"] < last["macd_signal"]
 
-        # Prepare close request
-        request = {
-            "action": MetaTrader5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": volume,
-            "type": order_type,
-            "position": ticket,
-            "deviation": 20,
-            "magic": 123456,  # optional ID for your bot
-            "comment": "RSI Exit Strategy",
-            "type_filling": MetaTrader5.ORDER_FILLING_FOK,
-        }
+        # Price vs long-term SMA
+        above_trend = last["close"] > last["sma_trend"]
+        below_trend = last["close"] < last["sma_trend"]
 
-        # Try up to 3 times
-        for attempt in range(3):
-            result = MetaTrader5.order_send(request)
-            if result and result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
-                print(f"✅ Closed {symbol} ({position_type.upper()}) successfully | Ticket={ticket}")
-                return
-            else:
-                print(f"⚠️ Attempt {attempt+1} failed to close {symbol} | Code={getattr(result, 'retcode', 'N/A')}")
-        
-        print(f"❌ Failed to close {symbol} after 3 attempts.")
+        # Bollinger filter
+        breakout_up = last["close"] > last["bb_mid"]
+        breakout_down = last["close"] < last["bb_mid"]
 
+        # Combine confirmations
+        if bullish_cross and rsi < 60 and macd_up and above_trend and breakout_up:
+            return "buy"
+        elif bearish_cross and rsi > 40 and macd_down and below_trend and breakout_down:
+            return "sell"
+        else:
+            return None
 
+    def scalping_strategy(self):
+        """
+        Fast scalping setup using EMA + RSI + Bollinger bounce.
+        Works best on M1–M15 with tight SL/TP.
+        """
+        df = self.compute_scalping_indicators()
+        if len(df) < 3:
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        # EMA crossover
+        bullish_cross = (
+            prev["ema_fast"] < prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
+        )
+        bearish_cross = (
+            prev["ema_fast"] > prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
+        )
+
+        # RSI and Bollinger
+        rsi = last["rsi"]
+        close = last["close"]
+        bb_upper = last["bb_upper"]
+        bb_lower = last["bb_lower"]
+
+        # BUY condition
+        if close < bb_lower and rsi < 35 and bullish_cross:
+            return "buy"
+
+        # SELL condition
+        elif close > bb_upper and rsi > 65 and bearish_cross:
+            return "sell"
+
+        else:
+            return None
+
+    def rsi_strategy(self):
+        data = self.compute_indicators()
+        last = data.iloc[-1]
+        rsi = last["rsi"]
+
+        print(f"RSI: {rsi:.2f}")
+        if rsi < 30:
+            return "buy"
+        elif rsi > 70:
+            return "sell"
+        else:
+            return None
 
     def moving_average_strategy(self):
         data = self.compute_indicators()
@@ -266,78 +172,42 @@ class TradingStrategy:
             return "sell"
         return None
 
-
-
-    def compute_retest_strategy(self, use_sma=200):
+    def hybrid_strategy(self):
         """
-        Retest strategy (returns only the latest valid signal):
-        - H1 for trend direction
-        - M5 for execution with retest confirmation
+        Combines RSI, EMA crossover, and MACD confirmation.
         """
+        data = self.compute_indicators()
+        last = data.iloc[-1]
+        prev = data.iloc[-2]
 
-        data_H1 = self.data["data_H1"].copy()
-        data_M5 = self.data["data_M5"].copy()
+        signal = None
 
-        # === 1️⃣ Identify trend on H1 ===
-        data_H1["sma_100"] = SMAIndicator(data_H1["close"], window=100).sma_indicator()
-        last_h1 = data_H1.iloc[-1]
-        trend = "bullish" if last_h1["close"] > last_h1["sma_100"] else "bearish"
-        print(f"[H1] Last Close: {last_h1['close']:.5f}, SMA100: {last_h1['sma_100']:.5f}, Trend: {trend}")
+        # EMA crossover logic
+        bullish_crossover = (
+            prev["ema_fast"] < prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]
+        )
+        bearish_crossover = (
+            prev["ema_fast"] > prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
+        )
 
-        # === 2️⃣ Compute M5 indicators ===
-        data_M5["sma_20"] = SMAIndicator(data_M5["close"], window=20).sma_indicator()
-        data_M5["sma_50"] = SMAIndicator(data_M5["close"], window=50).sma_indicator()
-        data_M5[f"sma_100"] = SMAIndicator(data_M5["close"], window=100).sma_indicator()
+        # RSI confirmation
+        rsi = last["rsi"]
+        macd_cross_up = last["macd"] > last["signal"]
+        macd_cross_down = last["macd"] < last["signal"]
 
+        if bullish_crossover and rsi < 60 and macd_cross_up:
+            signal = "buy"
+        elif bearish_crossover and rsi > 40 and macd_cross_down:
+            signal = "sell"
 
-        # Detect SMA crossovers
-        data_M5["prev_sma20"] = data_M5["sma_20"].shift(1)
-        data_M5["prev_sma50"] = data_M5["sma_50"].shift(1)
-
-        latest_signal = None
-
-        for i in range(1, len(data_M5)):
-            row = data_M5.iloc[i]
-            prev = data_M5.iloc[i - 1]
-            sma_main = row[f"sma_100"]
-
-            bullish_cross = (prev["sma_20"] < prev["sma_50"]) and (row["sma_20"] > row["sma_50"])
-            bearish_cross = (prev["sma_20"] > prev["sma_50"]) and (row["sma_20"] < row["sma_50"])
-
-            # print(f"[M5] {data_M5.index[i]} | Close: {row['close']:.5f} | SMA20: {row['sma_20']:.5f} | SMA50: {row['sma_50']:.5f} | SMA{use_sma}: {sma_main:.5f}")
-            # print(f"     Bullish Cross: {bullish_cross}, Bearish Cross: {bearish_cross}")
-
-            # === BUY ===
-            if trend == "bullish" and bullish_cross:
-                if row["close"] < sma_main:
-                    # print(f"     ✅ BUY signal possible at {row['close']:.5f} (retest below SMA{use_sma})")
-                    latest_signal = {
-                        "timestamp": data_M5.index[i],
-                        "type": "BUY",
-                        "price": row["close"],
-                        "trend": trend,
-                        "note": f"Retest confirmed below SMA{use_sma}",
-                    }
-
-            # === SELL ===
-            elif trend == "bearish" and bearish_cross:
-                if row["close"] > sma_main:
-                    # print(f"     ✅ SELL signal possible at {row['close']:.5f} (retest above SMA{use_sma})")
-                    latest_signal = {
-                        "timestamp": data_M5.index[i],
-                        "type": "SELL",
-                        "price": row["close"],
-                        "trend": trend,
-                        "note": f"Retest confirmed above SMA{use_sma}",
-                    }
-
-        if latest_signal:
-            print(f"=== Latest Signal: {latest_signal['type']} at {latest_signal['price']:.5f} ===")
-            return latest_signal.get("type").lower()
+        if signal:
+            print(
+                f"✅ Hybrid signal: {signal.upper()} | RSI={rsi:.2f}, MACD={last['macd']:.4f}"
+            )
         else:
-            print("=== No valid signal found ===")
-            return None
+            print("⏸ No confirmed signal yet.")
 
+        return signal
 
     # ------------------------------------------------------------
     # 🧩 RUNNER
@@ -498,28 +368,25 @@ class MetaTraderConfig:
 
             for deal in history:
                 if deal.profit != 0:
-                    all_data.append(
-                        {
-                            "ticket": deal.ticket,
-                            "symbol": deal.symbol,
-                            "time": datetime.fromtimestamp(deal.time, tz=timezone.utc),
-                            "type": "buy" if deal.type == 0 else "sell",
-                            "volume": deal.volume,
-                            "price": deal.price,
-                            "profit": deal.profit,
-                            "comment": "hit_sl" if "sl" in deal.comment else "hit_tp",
-                        }
-                    )
+                    all_data.append({
+                        "ticket": deal.ticket,
+                        "symbol": deal.symbol,
+                        "time": datetime.fromtimestamp(deal.time, tz=timezone.utc),
+                        "type": "buy" if deal.type==0 else "sell",
+                        "volume": deal.volume,
+                        "price": deal.price,
+                        "profit": deal.profit,
+                        "comment": "hit_sl" if "sl" in deal.comment else "hit_tp"
+                    })
 
         if not all_data:
-            print(
-                "No closed trades found in this period. Try adjusting the date range or check broker history settings."
-            )
+            print("No closed trades found in this period. Try adjusting the date range or check broker history settings.")
             return pd.DataFrame()
 
         data = pd.DataFrame(all_data)
         self.export_data(data, filename="trade_history", filetype="csv")
 
+                            
     def export_data(self, data, filename="market_data", filetype="csv"):
         """
         Export pandas DataFrame to CSV or Excel.
@@ -554,7 +421,7 @@ class MetaTraderConfig:
         print(f"✅ File saved successfully: {filepath}")
         return filepath
 
-    def can_trade_symbol(self, symbol, cooldown_minutes=1):
+    def can_trade_symbol(self, symbol, cooldown_minutes=10):
         """
         Determines if a symbol can be traded based on:
         1. No open positions for the symbol
@@ -650,9 +517,14 @@ class MetaTraderConfig:
         else:
             print(f"✅ Trade executed for {symbol}: {signal.upper()} at {price}")
 
-    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=False):
+            
+
+    def run_trading_loop(
+        self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=True
+    ):
         """Continuously fetch data, apply strategy, and trade."""
         delay = self.get_timeframe_duration(timeframe=timeframe)
+
 
         while True:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -660,24 +532,21 @@ class MetaTraderConfig:
             if trail:
                 self.update_trailing_stop()
             print(f"\n🔄 Checking markets...{now}")
-            trading_exit_strategy = TradingStrategy()
-            trading_exit_strategy.rsi_exit_strategy()
 
             for symbol in symbols:
                 settings = symbols_dict[symbol]
                 sl_pips = settings["sl_pips"]
                 tp_pips = settings["tp_pips"]
 
-                data_H1 = self.get_market_data_rate(
-                    symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_H1
-                )
-                data_M5 = self.get_market_data_rate(
-                    symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_M5
-                )
-
-                data = {"data_H1": data_H1, "data_M5": data_M5}
+                data_H1 = self.get_market_data_rate(symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_H1)
+                data_M5 = self.get_market_data_rate(symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_M5)
+                data = {
+                    "data_H1": data_H1,
+                    "data_M15": data_M5
+                }
                 strategy = "rsi_strategy"
                 trading_strategy = TradingStrategy(data=data, strategy=strategy)
+
                 signal = trading_strategy.run_strategy()
 
                 if signal:
@@ -691,9 +560,9 @@ class MetaTraderConfig:
                     )
                 else:
                     print(f"{symbol}: No trade signal.")
-
+            
             account_info = MetaTrader5.account_info()
-            print("💰 Balance:", f"${account_info.balance}")
+            print("💰 Balance:",f"${account_info.balance}")
 
             print(f"🕐 Delaying loop for {delay} seconds ({timeframe}) timeframe...\n")
             time.sleep(delay)

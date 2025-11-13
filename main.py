@@ -3,11 +3,8 @@ import MetaTrader5
 from decouple import config
 from symbols import get_symbols
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 import os
 
-# Force reload .env values
-load_dotenv(override=True)
 
 # Clear existing environment variables that may have been cached
 for key in ["MT5_USERNAME", "MT5_PASSWORD", "MT5_SERVER", "MT5_PATHWAY","MT5_USERNAME_TRIAL", "MT5_PASSWORD_TRIAL", "MT5_SERVER_TRIAL"]:
@@ -34,7 +31,6 @@ project_settings = {
 }
 
 symbols = get_symbols().get('symbols')
-print(project_settings)
 meta_trader_config = MetaTraderConfig()
 
 # initialize and login mt5
