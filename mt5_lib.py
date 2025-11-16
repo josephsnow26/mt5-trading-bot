@@ -157,18 +157,18 @@ class TradingStrategy:
             trend_note = ""
 
             # === BUY EXIT LOGIC ===
-            if position_type == "buy" and rsi_now > 70:
-                if rsi_prev < rsi_now:
+            if position_type == "buy":
+                if rsi_prev > 70 and rsi_prev < rsi_now:
                     trend_note = "RSI still rising — holding for extended gains"
-                elif rsi_prev > rsi_now:
+                elif rsi_prev >70 and rsi_prev > rsi_now:
                     should_exit = True
                     trend_note = "RSI peaked and now falling — exit to secure profits"
 
             # === SELL EXIT LOGIC ===
-            elif position_type == "sell" and rsi_now < 30:
-                if rsi_prev > rsi_now:
+            elif position_type == "sell":
+                if rsi_prev < 30 and rsi_prev > rsi_now:
                     trend_note = "RSI still falling — holding for extended downside"
-                elif rsi_prev < rsi_now:
+                elif rsi_prev < 30 and rsi_prev < rsi_now:
                     should_exit = True
                     trend_note = "RSI bottomed and now rising — exit to secure profits"
 

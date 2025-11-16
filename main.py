@@ -31,6 +31,7 @@ project_settings = {
 }
 
 symbols = get_symbols().get('symbols')
+print(symbols)
 meta_trader_config = MetaTraderConfig()
 
 # initialize and login mt5
@@ -40,4 +41,4 @@ start = end - timedelta(days=1)
 
 # df_trades  = meta_trader_config.get_trade_history(start, end)
 # print(df_trades)
-meta_trader_config.run_trading_loop(symbols=symbols, timeframe=MetaTrader5.TIMEFRAME_M1)
+meta_trader_config.run_trading_loop(symbols=symbols, timeframe=MetaTrader5.TIMEFRAME_M5)
