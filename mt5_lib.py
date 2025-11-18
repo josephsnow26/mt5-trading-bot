@@ -12,7 +12,7 @@ symbols_dict = get_symbols().get("symbols_dict")
 
 
 class TradingStrategy:
-    def __init__(self, data = None, balance=10000, risk_per_trade=0.02, strategy="hybrid"):
+    def __init__(self, data = None, balance=10000, risk_per_trade=0.02, strategy="hybrid",symbol=None):
         """
         balance: initial account balance
         risk_per_trade: percentage of balance risked per trade
@@ -23,7 +23,7 @@ class TradingStrategy:
         self.balance = balance
         self.risk_per_trade = risk_per_trade
         self.position = None  # {'type': 'buy' or 'sell', 'entry_price': float, 'sl': float, 'tp': float}
-
+        self.symbol = symbol
     # ------------------------------------------------------------
     # 🧠 INDICATOR CALCULATIONS
     # ------------------------------------------------------------
@@ -45,6 +45,9 @@ class TradingStrategy:
             df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
             df["ema_fast"] = EMAIndicator(df["close"], window=20).ema_indicator()
             df["ema_slow"] = EMAIndicator(df["close"], window=50).ema_indicator()
+            df["ema_8"] = EMAIndicator(df["close"], window=8).ema_indicator()
+            df["ema_21"] = EMAIndicator(df["close"], window=21).ema_indicator()
+            df["ema_200"] = EMAIndicator(df["close"], window=200).ema_indicator()
             df["sma_trend"] = df["close"].rolling(window=200).mean()
 
             macd = MACD(df["close"])
@@ -64,50 +67,99 @@ class TradingStrategy:
     # ------------------------------------------------------------
     # ⚙️ STRATEGIES
     # ------------------------------------------------------------
-  
+
+    def get_higher_tf_trend(self):
+        """
+        Determine the market trend from H1 using SMA100.
+        Returns: 'bullish', 'bearish', or None
+        """
+        data_H1 = self.data.get("data_H1", pd.DataFrame()).copy()
+
+        if data_H1.empty:
+            print("⚠️ No H1 data to determine trend.")
+            return None
+
+        last = data_H1.iloc[-1]
+
+        if last["close"] > last["sma_100"]:
+            return "bullish"
+        elif last["close"] < last["sma_100"]:
+            return "bearish"
+        else:
+            return None
+        
+
+    def get_swing_points(self, lookback=10):
+        """
+        Detects the most recent swing high and swing low.
+        A swing high: high[n] > high[n-1] and high[n] > high[n+1]
+        A swing low:  low[n] < low[n-1] and low[n] < low[n+1]
+        """
+        df = self.data.get("data_M5", pd.DataFrame()).copy()
+        if df.empty or len(df) < lookback + 3:
+            return None, None
+
+        df = df.tail(lookback).reset_index(drop=True)
+
+        swing_high = None
+        swing_low = None
+
+        for i in range(1, len(df)-1):
+            # Swing High
+            if df.loc[i, "high"] > df.loc[i-1, "high"] and df.loc[i, "high"] > df.loc[i+1, "high"]:
+                swing_high = df.loc[i, "high"]
+
+            # Swing Low
+            if df.loc[i, "low"] < df.loc[i-1,"low"] and df.loc[i,"low"] < df.loc[i+1,"low"]:
+                swing_low = df.loc[i,"low"]
+
+        return swing_high, swing_low
+
 
     def rsi_strategy(self):
         """
-        RSI-based trading strategy:
-        - Determines overall trend from H1 using SMA(100)
-        - Uses RSI on M5 for entry signals
+        RSI + Trend + Opposite Swing Structure Filter
         """
-        # === Compute & prepare indicators ===
         self.compute_indicators()
 
-        data_H1 = self.data.get("data_H1", pd.DataFrame()).copy()
         data_M5 = self.data.get("data_M5", pd.DataFrame()).copy()
-
-        if data_H1.empty or data_M5.empty:
-            print("⚠️ Insufficient data for RSI strategy.")
+        if data_M5.empty:
+            print("⚠️ Insufficient M5 data.")
             return None
 
-        # === 1️⃣ Identify trend on H1 ===
-        last_h1 = data_H1.iloc[-1]
-        trend = "bullish" if last_h1["close"] > last_h1["sma_100"] else "bearish"
-
-        # === 2️⃣ Get RSI from M5 ===
         last_m5 = data_M5.iloc[-1]
+        close_price = last_m5["close"]
         rsi = last_m5["rsi"]
 
-        # === 3️⃣ Determine signal ===
+        # === 1️⃣ TREND ===
+        trend = self.get_higher_tf_trend()
+        if trend is None:
+            print("⚠️ Cannot determine trend.")
+            return None
+
+        
+
+        # === 3️⃣ SIGNAL FILTER ===
+        signal = None
+
+        # BUY: use previous swing HIGH as filter
         if rsi < 30 and trend == "bullish":
             signal = "buy"
+           
+
+        # SELL: use previous swing LOW as filter
         elif rsi > 70 and trend == "bearish":
             signal = "sell"
-        else:
-            signal = None
-
-        # === 4️⃣ Print diagnostic info ===
+           
+        # === 4️⃣ DIAGNOSTICS ===
         print("\n📊 RSI STRATEGY DIAGNOSTICS")
-        print(f"📅 Time (M5): {last_m5.name if hasattr(last_m5, 'name') else 'N/A'}")
-        print(f"Trend (H1): {trend.upper()}")
-        print(f"RSI (M5): {rsi:.2f}")
-        # print(f"H1 Close: {last_h1['close']:.5f}")
-        # print(f"SMA(100): {last_h1['sma_100']:.5f}")
-        print(f"Signal: {'✅ ' + signal.upper() if signal else '❌ No clear signal'}")
+        print(f"Trend: {trend.upper()}")
+        print(f"RSI: {rsi:.2f}")
+        print(f"Close Price: {close_price}")
+        print(f"Signal: {'✅ '+signal if signal else '❌ No signal'}")
 
         return signal
+
 
     def rsi_exit_strategy(self, timeframe=MetaTrader5.TIMEFRAME_M5, rsi_period=14):
         """
@@ -116,9 +168,7 @@ class TradingStrategy:
         - SELL: Exit when RSI < 30 and starts increasing
         - Fetches live M5 data per symbol for accurate RSI confirmation
         """
-        import pandas as pd
-        from ta.momentum import RSIIndicator
-
+    
         positions = MetaTrader5.positions_get()
         if not positions:
             print("⚠️ No open positions to evaluate for RSI exit.")
@@ -197,8 +247,269 @@ class TradingStrategy:
             print("\n✅ All positions still valid — RSI trends not reversed yet.")
 
         return exit_trades
-
     
+
+    def ema_crossover_strategy(self):
+        """
+        EMA Crossover Entry Strategy on M5 with higher timeframe trend filter
+        """
+        self.compute_indicators()
+        df = self.data.get("data_M5", pd.DataFrame())
+        if df.empty:
+            print("⚠️ No M5 data")
+            return None
+
+        trend = self.get_higher_tf_trend()
+        if trend is None:
+            print("⚠️ Cannot determine trend")
+            return None
+
+        last_m5 = df.iloc[-1]
+        close_price = last_m5["close"]
+
+        # Get last 2 EMA values to detect crossover
+        fast_prev, fast_curr = df["ema_8"].iloc[-2], df["ema_8"].iloc[-1]
+        slow_prev, slow_curr = df["ema_21"].iloc[-2], df["ema_21"].iloc[-1]
+
+        # Calculate EMA distance & slope
+        ema_distance = abs(fast_curr - slow_curr)
+        fast_slope = fast_curr - fast_prev
+        min_distance = 0.001 * close_price
+        min_slope = 0.0005 * close_price
+
+        signal = None
+
+        print(f"\n📈 EMA Check for latest candle:")
+        print(f"   EMA 8 prev: {fast_prev:.5f}, curr: {fast_curr:.5f}")
+        print(f"   EMA 21 prev: {slow_prev:.5f}, curr: {slow_curr:.5f}")
+        print(f"   EMA distance: {ema_distance:.5f} (min required: {min_distance:.5f})")
+        print(f"   EMA slope: {fast_slope:.5f} (min required: {min_slope:.5f})")
+        print(f"   Higher TF trend: {trend.upper()}")
+
+        # Check BUY conditions
+        buy_conditions = [
+            fast_prev <= slow_prev and fast_curr > slow_curr,
+            trend == "bullish",
+            ema_distance >= min_distance,
+            abs(fast_slope) >= min_slope
+        ]
+        if all(buy_conditions):
+            signal = "buy"
+        else:
+            print("❌ BUY conditions not fully met:")
+            print(f"   Buy Crossover: {buy_conditions[0]}")
+            print(f"   Trend bullish: {buy_conditions[1]}")
+            print(f"   Distance OK: {buy_conditions[2]}")
+            print(f"   Slope OK: {buy_conditions[3]}")
+
+        # Check SELL conditions
+        sell_conditions = [
+            fast_prev >= slow_prev and fast_curr < slow_curr,
+            trend == "bearish",
+            ema_distance >= min_distance,
+            abs(fast_slope) >= min_slope
+        ]
+        if all(sell_conditions):
+            signal = "sell"
+        else:
+            print("❌ SELL conditions not fully met:")
+            print(f"   Sell Crossover: {sell_conditions[0]}")
+            print(f"   Trend bearish: {sell_conditions[1]}")
+            print(f"   Distance OK: {sell_conditions[2]}")
+            print(f"   Slope OK: {sell_conditions[3]}")
+
+        print(f"📊 EMA Crossover Entry Signal: {signal}")
+        return signal
+    
+
+    def macd_strategy(self):
+        """
+        MACD + 200 EMA Strategy:
+        BUY  = price above 200 EMA + MACD crosses up below zero
+        SELL = price below 200 EMA + MACD crosses down above zero
+
+        Returns dict:
+            {
+                "signal": "buy/sell",
+                "sl_pips": int,
+                "tp_pips": int
+            }
+        """
+        symbol = self.symbol
+
+        self.compute_indicators()
+
+        df = self.data.get("data_M5", pd.DataFrame()).copy()
+        if df.empty:
+            print("⚠️ No data available for MACD strategy.")
+            return None
+
+        # Ensure symbol pip size
+        symbol = (symbol or "")
+
+        # Pip size per symbol
+        if symbol == "XAUUSDm":
+            PIP = 0.10         # Gold
+        elif symbol == "USDJPYm":
+            PIP = 0.01         # Yen pairs
+        else:
+            PIP = 0.0001       # EURUSDm, GBPUSDm, etc.
+
+
+        # Last two candles (cross detection)
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        close_price = last["close"]
+        ema_200 = last["ema_200"]
+
+        macd_now = last["macd"]
+        macd_prev = prev["macd"]
+        signal_now = last["macd_signal"]
+        signal_prev = prev["macd_signal"]
+
+        # --- Trend from EMA 200 ---
+        trend = "bullish" if close_price > ema_200 else "bearish"
+        signal = None
+
+        # ---------- BUY ----------
+        if trend == "bullish":
+            if macd_prev < signal_prev and macd_now > signal_now:
+                if macd_prev < 0:  # cross begins below zero
+                    signal = "buy"
+
+        # ---------- SELL ----------
+        elif trend == "bearish":
+            if macd_prev > signal_prev and macd_now < signal_now:
+                if macd_prev > 0:  # cross begins above zero
+                    signal = "sell"
+
+        # === Diagnostics Output === 
+        print("\n📊 MACD STRATEGY DIAGNOSTICS") 
+        print(f"Trend: {trend.upper()}") 
+        print(f"Close Price: {close_price}") 
+        print(f"EMA200: {ema_200}") 
+        print(f"MACD(prev→now): {macd_prev:.4f} → {macd_now:.4f}") 
+        print(f"Signal(prev→now): {signal_prev:.4f} → {signal_now:.4f}") 
+        print(f"Final Signal: {'✅ ' + signal if signal else '❌ No signal'}")
+
+        # No signal → stop
+        if not signal:
+            return None
+
+        # -----------------------------
+        # 📌 SL + TP in pips
+        # -----------------------------
+        offset_price = 5 * PIP     # 5 pip offset
+
+        if signal == "buy":
+            # BUY → SL 5 pips BELOW EMA200
+            sl_price = ema_200 - offset_price
+            sl_pips = int(abs(close_price - sl_price) / PIP)
+
+        elif signal == "sell":
+            # SELL → SL 5 pips ABOVE EMA200
+            sl_price = ema_200 + offset_price
+            sl_pips = int(abs(sl_price - close_price) / PIP)
+
+        # TP = 1.5 × SL
+        tp_pips = int(sl_pips * 1.5)
+
+        # Diagnostic
+        print(f"\n📊 {symbol} MACD Strategy")
+        print(f"Signal: {signal}")
+        print(f"Pip Size: {PIP}")
+        print(f"SL (pips): {sl_pips}")
+        print(f"TP (pips): {tp_pips}")
+
+        return {
+            "signal": signal,
+            "sl_pips": sl_pips,
+            "tp_pips": tp_pips
+        }
+
+
+    def ema_crossover_exit(self, timeframe=MetaTrader5.TIMEFRAME_M5):
+        """
+        EMA Crossover Exit Strategy (loop through all open positions)
+        - BUY: Exit when EMA(8) crosses below EMA(21)
+        - SELL: Exit when EMA(8) crosses above EMA(21)
+        - Fetches live M5 data per symbol for accurate EMA confirmation
+        """
+
+        positions = MetaTrader5.positions_get()
+        if not positions:
+            print("⚠️ No open positions to evaluate for EMA exit.")
+            return []
+
+        exit_trades = []
+
+        print("\n🧭 EMA CROSSOVER EXIT CHECK (live data per symbol)")
+        print(f"Total open positions: {len(positions)}\n")
+
+        for pos in positions:
+            symbol = pos.symbol
+            position_type = "buy" if pos.type == MetaTrader5.POSITION_TYPE_BUY else "sell"
+
+            # === Get live M5 data for this symbol ===
+            rates = MetaTrader5.copy_rates_from_pos(symbol, timeframe, 0, 50)
+            if rates is None or len(rates) < 2:
+                print(f"⚠️ Not enough M5 data for {symbol} — skipping.")
+                continue
+
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+
+            # === Compute EMAs ===
+            df["ema_8"] = df["close"].ewm(span=8, adjust=False).mean()
+            df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
+
+            if len(df) < 2:
+                print(f"⚠️ Not enough EMA data for {symbol} — skipping.")
+                continue
+
+            # === Check last crossover ===
+            fast_prev, fast_curr = df["ema_8"].iloc[-2], df["ema_8"].iloc[-1]
+            slow_prev, slow_curr = df["ema_21"].iloc[-2], df["ema_21"].iloc[-1]
+
+            should_exit = False
+            exit_note = ""
+
+            # BUY exit: fast EMA crosses below slow EMA
+            if position_type == "buy" and fast_prev >= slow_prev and fast_curr < slow_curr:
+                should_exit = True
+                exit_note = "EMA(8) crossed below EMA(21) — exit BUY"
+
+            # SELL exit: fast EMA crosses above slow EMA
+            elif position_type == "sell" and fast_prev <= slow_prev and fast_curr > slow_curr:
+                should_exit = True
+                exit_note = "EMA(8) crossed above EMA(21) — exit SELL"
+
+            status = "🚪 EXIT" if should_exit else "⏳ HOLD"
+            print(f"🔹 {symbol}: {position_type.upper()} | EMA8={fast_curr:.5f} EMA21={slow_curr:.5f} | {status} — {exit_note}")
+
+            if should_exit:
+                trade_info = {
+                    "symbol": symbol,
+                    "ticket": pos.ticket,
+                    "position": position_type,
+                    "ema8": fast_curr,
+                    "ema21": slow_curr,
+                    "exit_reason": exit_note,
+                }
+                exit_trades.append(trade_info)
+
+        # === Execute exits ===
+        if exit_trades:
+            print("\n⚙️ Executing EMA-based exits...\n")
+            for trade in exit_trades:
+                self.close_position(trade)
+                print(f"✅ Closed {trade['symbol']} ({trade['position'].upper()}) | EMA8={trade['ema8']:.5f} EMA21={trade['ema21']:.5f}")
+        else:
+            print("\n✅ All positions still valid — no EMA cross exit yet.")
+
+        return exit_trades
+
 
     def close_position(self, trade):
         """
@@ -250,95 +561,7 @@ class TradingStrategy:
         print(f"❌ Failed to close {symbol} after 3 attempts.")
 
 
-
-    def moving_average_strategy(self):
-        data = self.compute_indicators()
-        last = data.iloc[-1]
-        prev = data.iloc[-2]
-
-        print(f"EMA Fast: {last['ema_fast']:.5f} | EMA Slow: {last['ema_slow']:.5f}")
-
-        if prev["ema_fast"] < prev["ema_slow"] and last["ema_fast"] > last["ema_slow"]:
-            return "buy"
-        elif (
-            prev["ema_fast"] > prev["ema_slow"] and last["ema_fast"] < last["ema_slow"]
-        ):
-            return "sell"
-        return None
-
-
-
-    def compute_retest_strategy(self, use_sma=200):
-        """
-        Retest strategy (returns only the latest valid signal):
-        - H1 for trend direction
-        - M5 for execution with retest confirmation
-        """
-
-        data_H1 = self.data["data_H1"].copy()
-        data_M5 = self.data["data_M5"].copy()
-
-        # === 1️⃣ Identify trend on H1 ===
-        data_H1["sma_100"] = SMAIndicator(data_H1["close"], window=100).sma_indicator()
-        last_h1 = data_H1.iloc[-1]
-        trend = "bullish" if last_h1["close"] > last_h1["sma_100"] else "bearish"
-        print(f"[H1] Last Close: {last_h1['close']:.5f}, SMA100: {last_h1['sma_100']:.5f}, Trend: {trend}")
-
-        # === 2️⃣ Compute M5 indicators ===
-        data_M5["sma_20"] = SMAIndicator(data_M5["close"], window=20).sma_indicator()
-        data_M5["sma_50"] = SMAIndicator(data_M5["close"], window=50).sma_indicator()
-        data_M5[f"sma_100"] = SMAIndicator(data_M5["close"], window=100).sma_indicator()
-
-
-        # Detect SMA crossovers
-        data_M5["prev_sma20"] = data_M5["sma_20"].shift(1)
-        data_M5["prev_sma50"] = data_M5["sma_50"].shift(1)
-
-        latest_signal = None
-
-        for i in range(1, len(data_M5)):
-            row = data_M5.iloc[i]
-            prev = data_M5.iloc[i - 1]
-            sma_main = row[f"sma_100"]
-
-            bullish_cross = (prev["sma_20"] < prev["sma_50"]) and (row["sma_20"] > row["sma_50"])
-            bearish_cross = (prev["sma_20"] > prev["sma_50"]) and (row["sma_20"] < row["sma_50"])
-
-            # print(f"[M5] {data_M5.index[i]} | Close: {row['close']:.5f} | SMA20: {row['sma_20']:.5f} | SMA50: {row['sma_50']:.5f} | SMA{use_sma}: {sma_main:.5f}")
-            # print(f"     Bullish Cross: {bullish_cross}, Bearish Cross: {bearish_cross}")
-
-            # === BUY ===
-            if trend == "bullish" and bullish_cross:
-                if row["close"] < sma_main:
-                    # print(f"     ✅ BUY signal possible at {row['close']:.5f} (retest below SMA{use_sma})")
-                    latest_signal = {
-                        "timestamp": data_M5.index[i],
-                        "type": "BUY",
-                        "price": row["close"],
-                        "trend": trend,
-                        "note": f"Retest confirmed below SMA{use_sma}",
-                    }
-
-            # === SELL ===
-            elif trend == "bearish" and bearish_cross:
-                if row["close"] > sma_main:
-                    # print(f"     ✅ SELL signal possible at {row['close']:.5f} (retest above SMA{use_sma})")
-                    latest_signal = {
-                        "timestamp": data_M5.index[i],
-                        "type": "SELL",
-                        "price": row["close"],
-                        "trend": trend,
-                        "note": f"Retest confirmed above SMA{use_sma}",
-                    }
-
-        if latest_signal:
-            print(f"=== Latest Signal: {latest_signal['type']} at {latest_signal['price']:.5f} ===")
-            return latest_signal.get("type").lower()
-        else:
-            print("=== No valid signal found ===")
-            return None
-
-
+    
     # ------------------------------------------------------------
     # 🧩 RUNNER
     # ------------------------------------------------------------
@@ -362,16 +585,16 @@ class MetaTraderConfig:
 
     def get_timeframe_duration(self, timeframe):
         mapping = {
-            MetaTrader5.TIMEFRAME_M1: 60,
-            MetaTrader5.TIMEFRAME_M2: 120,
-            MetaTrader5.TIMEFRAME_M3: 180,
-            MetaTrader5.TIMEFRAME_M4: 240,
-            MetaTrader5.TIMEFRAME_M5: 300,
+            MetaTrader5.TIMEFRAME_M1:  60,
+            MetaTrader5.TIMEFRAME_M2:  120,
+            MetaTrader5.TIMEFRAME_M3:  180,
+            MetaTrader5.TIMEFRAME_M4:  240,
+            MetaTrader5.TIMEFRAME_M5:  300,
             MetaTrader5.TIMEFRAME_M15: 900,
             MetaTrader5.TIMEFRAME_M30: 1800,
-            MetaTrader5.TIMEFRAME_H1: 3600,
-            MetaTrader5.TIMEFRAME_H4: 14400,
-            MetaTrader5.TIMEFRAME_D1: 86400,
+            MetaTrader5.TIMEFRAME_H1:  3600,
+            MetaTrader5.TIMEFRAME_H4:  14400,
+            MetaTrader5.TIMEFRAME_D1:  86400,
         }
         return mapping.get(timeframe, 60)  # default 60 sec if not found
 
@@ -449,7 +672,7 @@ class MetaTraderConfig:
         return data
 
     def get_market_data_rate(
-        self, timeframe=None, rate=120, symbol=None, download=None
+        self, timeframe=None, rate=250, symbol=None, download=None
     ):
         """
         Fetch market data (historical candles) from MetaTrader 5.
@@ -650,7 +873,7 @@ class MetaTraderConfig:
         else:
             print(f"✅ Trade executed for {symbol}: {signal.upper()} at {price}")
 
-    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=False):
+    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=True):
         """Continuously fetch data, apply strategy, and trade."""
         delay = self.get_timeframe_duration(timeframe=timeframe)
 
@@ -660,13 +883,10 @@ class MetaTraderConfig:
             if trail:
                 self.update_trailing_stop()
             print(f"\n🔄 Checking markets...{now}")
-            trading_exit_strategy = TradingStrategy()
-            trading_exit_strategy.rsi_exit_strategy()
+            
 
             for symbol in symbols:
-                settings = symbols_dict[symbol]
-                sl_pips = settings["sl_pips"]
-                tp_pips = settings["tp_pips"]
+                print(symbol)
 
                 data_H1 = self.get_market_data_rate(
                     symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_H1
@@ -676,9 +896,15 @@ class MetaTraderConfig:
                 )
 
                 data = {"data_H1": data_H1, "data_M5": data_M5}
-                strategy = "rsi_strategy"
-                trading_strategy = TradingStrategy(data=data, strategy=strategy)
-                signal = trading_strategy.run_strategy()
+                strategy = "macd_strategy"  # or "rsi_strategy", "hybrid"
+                trading_strategy = TradingStrategy(data=data, strategy=strategy,symbol=symbol)
+                response = trading_strategy.run_strategy()
+                if response is None:
+                    print(f"{symbol}: No response from strategy.")
+                    continue
+                signal = response.get("signal") 
+                sl_pips = response.get("sl_pips") 
+                tp_pips = response.get("tp_pips") 
 
                 if signal:
                     print(f"{symbol}: Signal = {signal.upper()}")
