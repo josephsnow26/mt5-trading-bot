@@ -6,6 +6,10 @@ from ta.trend import MACD, EMAIndicator, SMAIndicator
 from ta.volatility import BollingerBands
 from datetime import datetime, timedelta, timezone
 from symbols import get_symbols
+import numpy as np
+from sklearn.linear_model import LinearRegression
+
+
 
 
 symbols_dict = get_symbols().get("symbols_dict")
@@ -322,6 +326,15 @@ class TradingStrategy:
         return signal
     
 
+
+    def macd_lr_slope(self, period=6):
+        df = self.data.get("data_M5", pd.DataFrame()).copy()
+        y = df["macd"].iloc[-period:].values
+        x = np.arange(period).reshape(-1, 1)
+
+        model = LinearRegression().fit(x, y)
+        return model.coef_[0]  # slope
+
     def macd_strategy(self):
         """
         MACD + 200 EMA Strategy:
@@ -349,11 +362,11 @@ class TradingStrategy:
 
         # Pip size per symbol
         if symbol == "XAUUSDm":
-            PIP = 0.10         # Gold
-        elif symbol == "USDJPYm":
-            PIP = 0.01         # Yen pairs
+            PIP = 0.10          # Gold
+        elif symbol.endswith("JPYm"):
+            PIP = 0.01          # All JPY pairs (USDJPYm, EURJPYm, GBPJPYm, CHFJPYm, etc.)
         else:
-            PIP = 0.0001       # EURUSDm, GBPUSDm, etc.
+            PIP = 0.0001        # Normal FX pairs (EURUSDm, GBPUSDm, etc.)
 
 
         # Last two candles (cross detection)
@@ -367,31 +380,43 @@ class TradingStrategy:
         macd_prev = prev["macd"]
         signal_now = last["macd_signal"]
         signal_prev = prev["macd_signal"]
+        # MACD slope = difference between last 3 MACD values
+        macd_slope = self.macd_lr_slope(period=10)
+        good_slope = abs(macd_slope) > 0.0005
 
         # --- Trend from EMA 200 ---
         trend = "bullish" if close_price > ema_200 else "bearish"
         signal = None
 
         # ---------- BUY ----------
-        if trend == "bullish":
+        if trend == "bullish" and good_slope:
             if macd_prev < signal_prev and macd_now > signal_now:
                 if macd_prev < 0:  # cross begins below zero
                     signal = "buy"
 
         # ---------- SELL ----------
-        elif trend == "bearish":
+        elif trend == "bearish" and good_slope:
             if macd_prev > signal_prev and macd_now < signal_now:
                 if macd_prev > 0:  # cross begins above zero
                     signal = "sell"
 
         # === Diagnostics Output === 
         print("\n📊 MACD STRATEGY DIAGNOSTICS") 
+        print(f"Symbol: {symbol}")
         print(f"Trend: {trend.upper()}") 
         print(f"Close Price: {close_price}") 
         print(f"EMA200: {ema_200}") 
         print(f"MACD(prev→now): {macd_prev:.4f} → {macd_now:.4f}") 
         print(f"Signal(prev→now): {signal_prev:.4f} → {signal_now:.4f}") 
         print(f"Final Signal: {'✅ ' + signal if signal else '❌ No signal'}")
+        if not good_slope:
+            print(f"❌{symbol}: Slope too flat → Avoiding consolidation. slope: {macd_slope:.5f}")
+        else:
+            print(f"✅ {symbol}: Slope acceptable. slope:", f"{macd_slope:.5f}")
+        print("=========================================================================")
+
+
+
 
         # No signal → stop
         if not signal:
@@ -415,12 +440,7 @@ class TradingStrategy:
         # TP = 1.5 × SL
         tp_pips = int(sl_pips * 1.5)
 
-        # Diagnostic
-        print(f"\n📊 {symbol} MACD Strategy")
-        print(f"Signal: {signal}")
-        print(f"Pip Size: {PIP}")
-        print(f"SL (pips): {sl_pips}")
-        print(f"TP (pips): {tp_pips}")
+       
 
         return {
             "signal": signal,
@@ -818,14 +838,16 @@ class MetaTraderConfig:
         self,
         symbol,
         signal=None,
-        lot=0.01,
+        lot_size=None,
         deviation=10,
         sl_pips=None,
         tp_pips=None,
         strategy="rsi_strategy",
     ):
         """Executes a buy or sell order in MetaTrader 5."""
+
         can_trade = self.can_trade_symbol(symbol, cooldown_minutes=20)
+        
 
         if not can_trade:
             return
@@ -846,7 +868,7 @@ class MetaTraderConfig:
         )
         price = tick.ask if signal == "buy" else tick.bid
         trade_risk = self.calculate_trade_risk(
-            symbol, signal, price, lot=lot, sl_pips=sl_pips, tp_pips=tp_pips
+            symbol, signal, price, lot=lot_size, sl_pips=sl_pips, tp_pips=tp_pips
         )
         sl = trade_risk.get("sl_price")
         tp = trade_risk.get("tp_price")
@@ -855,7 +877,7 @@ class MetaTraderConfig:
         request = {
             "action": MetaTrader5.TRADE_ACTION_DEAL,
             "symbol": symbol,
-            "volume": lot,
+            "volume": lot_size,
             "type": order_type,
             "price": price,
             "deviation": deviation,
@@ -873,9 +895,13 @@ class MetaTraderConfig:
         else:
             print(f"✅ Trade executed for {symbol}: {signal.upper()} at {price}")
 
-    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=True):
+    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=False):
         """Continuously fetch data, apply strategy, and trade."""
         delay = self.get_timeframe_duration(timeframe=timeframe)
+        account_info = MetaTrader5.account_info()
+        balance = account_info.balance
+        lot_size = self.calculate_lot(balance)
+        print(f"Calculated lot size: {lot_size} for balance: {balance}")
 
         while True:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -886,8 +912,6 @@ class MetaTraderConfig:
             
 
             for symbol in symbols:
-                print(symbol)
-
                 data_H1 = self.get_market_data_rate(
                     symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_H1
                 )
@@ -900,7 +924,6 @@ class MetaTraderConfig:
                 trading_strategy = TradingStrategy(data=data, strategy=strategy,symbol=symbol)
                 response = trading_strategy.run_strategy()
                 if response is None:
-                    print(f"{symbol}: No response from strategy.")
                     continue
                 signal = response.get("signal") 
                 sl_pips = response.get("sl_pips") 
@@ -913,13 +936,13 @@ class MetaTraderConfig:
                         signal,
                         sl_pips=sl_pips,
                         tp_pips=tp_pips,
+                        lot_size=lot_size,
                         strategy=strategy,
                     )
                 else:
                     print(f"{symbol}: No trade signal.")
 
-            account_info = MetaTrader5.account_info()
-            print("💰 Balance:", f"${account_info.balance}")
+            print("💰 Balance:", f"${balance}")
 
             print(f"🕐 Delaying loop for {delay} seconds ({timeframe}) timeframe...\n")
             time.sleep(delay)
@@ -1100,3 +1123,12 @@ class MetaTraderConfig:
                             print(
                                 f"❌ Failed to modify SL for SELL {symbol}: {result.comment}"
                             )
+
+
+    def calculate_lot(self,balance):
+        """
+        Calculate a safe lot size based on account balance.
+        Minimum lot size is 0.01.
+        """
+        lot = max(round(balance / 1000, 2), 0.01)
+        return lot
