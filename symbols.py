@@ -11,7 +11,6 @@ def get_symbols():
         "AUDJPYm",   # Added
         "CADJPYm",   # Added
         "CHFJPYm",   # Added
-        "NZDJPYm",   # Added
     ]
 
     symbols_dict = {
@@ -27,7 +26,6 @@ def get_symbols():
         "AUDJPYm": {"sl_pips": 18, "tp_pips": 70, "trail_start": 18, "trail_step": 3},
         "CADJPYm": {"sl_pips": 15, "tp_pips": 60, "trail_start": 16, "trail_step": 2},
         "CHFJPYm": {"sl_pips": 20, "tp_pips": 75, "trail_start": 20, "trail_step": 3},
-        "NZDJPYm": {"sl_pips": 18, "tp_pips": 65, "trail_start": 18, "trail_step": 2},
     }
 
     return {"symbols": symbols, "symbols_dict": symbols_dict}

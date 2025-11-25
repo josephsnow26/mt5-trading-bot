@@ -326,14 +326,72 @@ class TradingStrategy:
         return signal
     
 
-
-    def macd_lr_slope(self, period=6):
+    def macd_lr_slope(self, period=6, symbol = None):
         df = self.data.get("data_M5", pd.DataFrame()).copy()
         y = df["macd"].iloc[-period:].values
         x = np.arange(period).reshape(-1, 1)
 
         model = LinearRegression().fit(x, y)
-        return model.coef_[0]  # slope
+        slope = abs(round(model.coef_[0], 6))
+
+        
+        if symbol.endswith("JPYm"):
+            threshold = 0.0002   # safe for JPY pairs
+        
+        else:
+            threshold = 0.00002   # default for most pairs (EURUSD, CAD, etc.)
+
+        good_slope = abs(slope) > threshold
+
+        slope = f"{slope:.6f}"
+        threshold = f"{threshold:.6f}"
+
+
+        if good_slope:
+            message = f"✅ MACD slope {slope} for {symbol} slant enough (threshold={threshold})"
+        else:
+            message = f"❌ MACD slope {slope} for {symbol} is too flat (threshold={threshold})"
+
+        return {"ok": good_slope, "message": message}
+
+          
+    def macd_zero_distance_okay(self, symbol, macd_prev, macd_now):
+            """
+            Determines if the MACD cross is far enough away from the zero line
+            based on the currency pair.
+
+            Parameters:
+                symbol (str): Trading symbol, e.g., 'EURUSD', 'USDJPY', 'USDCAD'
+                macd_prev (float): Previous MACD value
+                macd_now (float): Current MACD value
+
+            Returns:
+                dict: {
+                    "ok": bool,         # True if distance is safe
+                    "message": str      # Explanation
+                }
+            """
+            # Set thresholds per instrument type
+            if symbol.endswith("JPYm"):
+                threshold = 0.0150   # safe for JPY pairs
+        
+            else:
+                threshold = 0.00008   # default for most pairs (EURUSD, CAD, etc.)
+
+            good_distance = (abs(macd_prev) >= threshold) and (abs(macd_now) >= threshold)
+
+            macd_now = abs(round(macd_now, 6))
+            macd_now = f"{macd_now:.6f}"
+            threshold = f"{threshold:.6f}"
+
+            if good_distance:
+                message = f"✅ MACD cross {macd_now} for {symbol} is far enough from zero (threshold={threshold})"
+            else:
+                message = f"❌ MACD cross {macd_now} for {symbol} is too close to zero (threshold={threshold})"
+
+            return {"ok": good_distance, "message": message}
+
+
 
     def macd_strategy(self):
         """
@@ -374,6 +432,7 @@ class TradingStrategy:
         prev = df.iloc[-2]
 
         close_price = last["close"]
+        open_price = last['open']
         ema_200 = last["ema_200"]
 
         macd_now = last["macd"]
@@ -381,21 +440,29 @@ class TradingStrategy:
         signal_now = last["macd_signal"]
         signal_prev = prev["macd_signal"]
         # MACD slope = difference between last 3 MACD values
-        macd_slope = self.macd_lr_slope(period=10)
-        good_slope = abs(macd_slope) > 0.0005
+        slope = self.macd_lr_slope(period=10,symbol=symbol)
+        good_slope = slope.get("ok")
+        distance = self.macd_zero_distance_okay(symbol, macd_prev, macd_now)
+        good_distance = distance.get("ok")
 
         # --- Trend from EMA 200 ---
-        trend = "bullish" if close_price > ema_200 else "bearish"
+        if close_price > ema_200 and open_price > ema_200:
+            trend = 'bullish'
+        elif close_price < ema_200 and open_price < ema_200:
+            trend = "bearish"
+        else:
+            trend = "inconclusive"
+            
         signal = None
 
         # ---------- BUY ----------
-        if trend == "bullish" and good_slope:
+        if trend == "bullish" and good_slope and good_distance:
             if macd_prev < signal_prev and macd_now > signal_now:
                 if macd_prev < 0:  # cross begins below zero
                     signal = "buy"
 
         # ---------- SELL ----------
-        elif trend == "bearish" and good_slope:
+        elif trend == "bearish" and good_slope and good_distance:
             if macd_prev > signal_prev and macd_now < signal_now:
                 if macd_prev > 0:  # cross begins above zero
                     signal = "sell"
@@ -409,10 +476,8 @@ class TradingStrategy:
         print(f"MACD(prev→now): {macd_prev:.4f} → {macd_now:.4f}") 
         print(f"Signal(prev→now): {signal_prev:.4f} → {signal_now:.4f}") 
         print(f"Final Signal: {'✅ ' + signal if signal else '❌ No signal'}")
-        if not good_slope:
-            print(f"❌{symbol}: Slope too flat → Avoiding consolidation. slope: {macd_slope:.5f}")
-        else:
-            print(f"✅ {symbol}: Slope acceptable. slope:", f"{macd_slope:.5f}")
+        print(slope.get("message"))
+        print(distance.get("message"))
         print("=========================================================================")
 
 
@@ -425,7 +490,7 @@ class TradingStrategy:
         # -----------------------------
         # 📌 SL + TP in pips
         # -----------------------------
-        offset_price = 5 * PIP     # 5 pip offset
+        offset_price = PIP    # no pip offset
 
         if signal == "buy":
             # BUY → SL 5 pips BELOW EMA200
@@ -433,12 +498,12 @@ class TradingStrategy:
             sl_pips = int(abs(close_price - sl_price) / PIP)
 
         elif signal == "sell":
-            # SELL → SL 5 pips ABOVE EMA200
+            # SELL → SL pips ABOVE EMA200
             sl_price = ema_200 + offset_price
             sl_pips = int(abs(sl_price - close_price) / PIP)
 
-        # TP = 1.5 × SL
-        tp_pips = int(sl_pips * 1.5)
+        # TP = 1.4 × SL
+        tp_pips = int(sl_pips * 1.4)
 
        
 
@@ -447,6 +512,9 @@ class TradingStrategy:
             "sl_pips": sl_pips,
             "tp_pips": tp_pips
         }
+
+
+  
 
 
     def ema_crossover_exit(self, timeframe=MetaTrader5.TIMEFRAME_M5):
