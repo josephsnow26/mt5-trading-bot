@@ -1,5 +1,5 @@
 import MetaTrader5
-import os, time
+import os, time, pytz, math
 import pandas as pd
 from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator, SMAIndicator
@@ -8,26 +8,35 @@ from datetime import datetime, timedelta, timezone
 from symbols import get_symbols
 import numpy as np
 from sklearn.linear_model import LinearRegression
-
-
+from datetime import time as t
 
 
 symbols_dict = get_symbols().get("symbols_dict")
 
 
 class TradingStrategy:
-    def __init__(self, data = None, balance=10000, risk_per_trade=0.02, strategy="hybrid",symbol=None):
+    def __init__(
+        self,
+        balance=10000,
+        risk_per_trade=0.02,
+        strategy="hybrid",
+        symbols=None,
+        symbol=None,
+        lot_size=None,
+    ):
         """
         balance: initial account balance
         risk_per_trade: percentage of balance risked per trade
         strategy: which logic to use ('rsi', 'moving_average', 'hybrid')
         """
-        self.data = data
         self.strategy = strategy
         self.balance = balance
         self.risk_per_trade = risk_per_trade
         self.position = None  # {'type': 'buy' or 'sell', 'entry_price': float, 'sl': float, 'tp': float}
         self.symbol = symbol
+        self.symbols = symbols
+        self.lot_size = lot_size
+
     # ------------------------------------------------------------
     # 🧠 INDICATOR CALCULATIONS
     # ------------------------------------------------------------
@@ -40,7 +49,9 @@ class TradingStrategy:
         # === H1 Trend Data ===
         data_H1 = self.data.get("data_H1", pd.DataFrame()).copy()
         if not data_H1.empty:
-            data_H1["sma_100"] = SMAIndicator(data_H1["close"], window=100).sma_indicator()
+            data_H1["sma_100"] = SMAIndicator(
+                data_H1["close"], window=100
+            ).sma_indicator()
             self.data["data_H1"] = data_H1
 
         # === Main timeframe indicators (e.g., M5) ===
@@ -49,9 +60,8 @@ class TradingStrategy:
             df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
             df["ema_fast"] = EMAIndicator(df["close"], window=20).ema_indicator()
             df["ema_slow"] = EMAIndicator(df["close"], window=50).ema_indicator()
-            df["ema_8"] = EMAIndicator(df["close"], window=8).ema_indicator()
-            df["ema_21"] = EMAIndicator(df["close"], window=21).ema_indicator()
             df["ema_200"] = EMAIndicator(df["close"], window=200).ema_indicator()
+            df["sma_200"] = SMAIndicator(df["close"], window=200).sma_indicator()
             df["sma_trend"] = df["close"].rolling(window=200).mean()
 
             macd = MACD(df["close"])
@@ -67,6 +77,16 @@ class TradingStrategy:
 
         return df
 
+    def get_pip_size(self):
+        # Pip size per symbol
+        if self.symbol == "XAUUSDm":
+            PIP = 0.10  # Gold
+        elif self.symbol.endswith("JPYm"):
+            PIP = 0.01  # All JPY pairs (USDJPYm, EURJPYm, GBPJPYm, CHFJPYm, etc.)
+        else:
+            PIP = 0.0001  # Normal FX pairs (EURUSDm, GBPUSDm, etc.)
+
+        return PIP
 
     # ------------------------------------------------------------
     # ⚙️ STRATEGIES
@@ -91,7 +111,6 @@ class TradingStrategy:
             return "bearish"
         else:
             return None
-        
 
     def get_swing_points(self, lookback=10):
         """
@@ -108,17 +127,22 @@ class TradingStrategy:
         swing_high = None
         swing_low = None
 
-        for i in range(1, len(df)-1):
+        for i in range(1, len(df) - 1):
             # Swing High
-            if df.loc[i, "high"] > df.loc[i-1, "high"] and df.loc[i, "high"] > df.loc[i+1, "high"]:
+            if (
+                df.loc[i, "high"] > df.loc[i - 1, "high"]
+                and df.loc[i, "high"] > df.loc[i + 1, "high"]
+            ):
                 swing_high = df.loc[i, "high"]
 
             # Swing Low
-            if df.loc[i, "low"] < df.loc[i-1,"low"] and df.loc[i,"low"] < df.loc[i+1,"low"]:
-                swing_low = df.loc[i,"low"]
+            if (
+                df.loc[i, "low"] < df.loc[i - 1, "low"]
+                and df.loc[i, "low"] < df.loc[i + 1, "low"]
+            ):
+                swing_low = df.loc[i, "low"]
 
         return swing_high, swing_low
-
 
     def rsi_strategy(self):
         """
@@ -141,20 +165,17 @@ class TradingStrategy:
             print("⚠️ Cannot determine trend.")
             return None
 
-        
-
         # === 3️⃣ SIGNAL FILTER ===
         signal = None
 
         # BUY: use previous swing HIGH as filter
         if rsi < 30 and trend == "bullish":
             signal = "buy"
-           
 
         # SELL: use previous swing LOW as filter
         elif rsi > 70 and trend == "bearish":
             signal = "sell"
-           
+
         # === 4️⃣ DIAGNOSTICS ===
         print("\n📊 RSI STRATEGY DIAGNOSTICS")
         print(f"Trend: {trend.upper()}")
@@ -164,15 +185,14 @@ class TradingStrategy:
 
         return signal
 
-
-    def rsi_exit_strategy(self, timeframe=MetaTrader5.TIMEFRAME_M5, rsi_period=14):
+    def rsi_exit(self, timeframe=MetaTrader5.TIMEFRAME_M5, rsi_period=14):
         """
         RSI-based exit strategy (independent of self.data)
         - BUY: Exit when RSI > 70 and starts decreasing
         - SELL: Exit when RSI < 30 and starts increasing
         - Fetches live M5 data per symbol for accurate RSI confirmation
         """
-    
+
         positions = MetaTrader5.positions_get()
         if not positions:
             print("⚠️ No open positions to evaluate for RSI exit.")
@@ -185,7 +205,9 @@ class TradingStrategy:
 
         for pos in positions:
             symbol = pos.symbol
-            position_type = "buy" if pos.type == MetaTrader5.POSITION_TYPE_BUY else "sell"
+            position_type = (
+                "buy" if pos.type == MetaTrader5.POSITION_TYPE_BUY else "sell"
+            )
 
             # === Get live data for this symbol ===
             rates = MetaTrader5.copy_rates_from_pos(symbol, timeframe, 0, 100)
@@ -214,7 +236,7 @@ class TradingStrategy:
             if position_type == "buy":
                 if rsi_prev > 70 and rsi_prev < rsi_now:
                     trend_note = "RSI still rising — holding for extended gains"
-                elif rsi_prev >70 and rsi_prev > rsi_now:
+                elif rsi_prev > 70 and rsi_prev > rsi_now:
                     should_exit = True
                     trend_note = "RSI peaked and now falling — exit to secure profits"
 
@@ -246,106 +268,33 @@ class TradingStrategy:
             print("\n⚙️ Executing RSI-based exits...\n")
             for trade in exit_trades:
                 self.close_position(trade)
-                print(f"✅ Closed {trade['symbol']} ({trade['position'].upper()}) | RSI={trade['rsi']:.2f}")
+                print(
+                    f"✅ Closed {trade['symbol']} ({trade['position'].upper()}) | RSI={trade['rsi']:.2f}"
+                )
         else:
             print("\n✅ All positions still valid — RSI trends not reversed yet.")
 
         return exit_trades
-    
 
-    def ema_crossover_strategy(self):
-        """
-        EMA Crossover Entry Strategy on M5 with higher timeframe trend filter
-        """
-        self.compute_indicators()
-        df = self.data.get("data_M5", pd.DataFrame())
-        if df.empty:
-            print("⚠️ No M5 data")
-            return None
-
-        trend = self.get_higher_tf_trend()
-        if trend is None:
-            print("⚠️ Cannot determine trend")
-            return None
-
-        last_m5 = df.iloc[-1]
-        close_price = last_m5["close"]
-
-        # Get last 2 EMA values to detect crossover
-        fast_prev, fast_curr = df["ema_8"].iloc[-2], df["ema_8"].iloc[-1]
-        slow_prev, slow_curr = df["ema_21"].iloc[-2], df["ema_21"].iloc[-1]
-
-        # Calculate EMA distance & slope
-        ema_distance = abs(fast_curr - slow_curr)
-        fast_slope = fast_curr - fast_prev
-        min_distance = 0.001 * close_price
-        min_slope = 0.0005 * close_price
-
-        signal = None
-
-        print(f"\n📈 EMA Check for latest candle:")
-        print(f"   EMA 8 prev: {fast_prev:.5f}, curr: {fast_curr:.5f}")
-        print(f"   EMA 21 prev: {slow_prev:.5f}, curr: {slow_curr:.5f}")
-        print(f"   EMA distance: {ema_distance:.5f} (min required: {min_distance:.5f})")
-        print(f"   EMA slope: {fast_slope:.5f} (min required: {min_slope:.5f})")
-        print(f"   Higher TF trend: {trend.upper()}")
-
-        # Check BUY conditions
-        buy_conditions = [
-            fast_prev <= slow_prev and fast_curr > slow_curr,
-            trend == "bullish",
-            ema_distance >= min_distance,
-            abs(fast_slope) >= min_slope
-        ]
-        if all(buy_conditions):
-            signal = "buy"
-        else:
-            print("❌ BUY conditions not fully met:")
-            print(f"   Buy Crossover: {buy_conditions[0]}")
-            print(f"   Trend bullish: {buy_conditions[1]}")
-            print(f"   Distance OK: {buy_conditions[2]}")
-            print(f"   Slope OK: {buy_conditions[3]}")
-
-        # Check SELL conditions
-        sell_conditions = [
-            fast_prev >= slow_prev and fast_curr < slow_curr,
-            trend == "bearish",
-            ema_distance >= min_distance,
-            abs(fast_slope) >= min_slope
-        ]
-        if all(sell_conditions):
-            signal = "sell"
-        else:
-            print("❌ SELL conditions not fully met:")
-            print(f"   Sell Crossover: {sell_conditions[0]}")
-            print(f"   Trend bearish: {sell_conditions[1]}")
-            print(f"   Distance OK: {sell_conditions[2]}")
-            print(f"   Slope OK: {sell_conditions[3]}")
-
-        print(f"📊 EMA Crossover Entry Signal: {signal}")
-        return signal
-    
-
-    def macd_lr_slope(self, period=6, symbol = None):
+    def macd_lr_slope(self, period=6, symbol=None):
         df = self.data.get("data_M5", pd.DataFrame()).copy()
         y = df["macd"].iloc[-period:].values
         x = np.arange(period).reshape(-1, 1)
 
         model = LinearRegression().fit(x, y)
         slope = abs(round(model.coef_[0], 6))
+        threshold = 0
 
-        
         if symbol.endswith("JPYm"):
-            threshold = 0.0002   # safe for JPY pairs
-        
+            threshold = 0.005  # safe for JPY pairs
+
         else:
-            threshold = 0.00002   # default for most pairs (EURUSD, CAD, etc.)
+            threshold = 0.00005  # default for most pairs (EURUSD, CAD, etc.)
 
         good_slope = abs(slope) > threshold
 
         slope = f"{slope:.6f}"
         threshold = f"{threshold:.6f}"
-
 
         if good_slope:
             message = f"✅ MACD slope {slope} for {symbol} slant enough (threshold={threshold})"
@@ -354,44 +303,110 @@ class TradingStrategy:
 
         return {"ok": good_slope, "message": message}
 
-          
     def macd_zero_distance_okay(self, symbol, macd_prev, macd_now):
-            """
-            Determines if the MACD cross is far enough away from the zero line
-            based on the currency pair.
+        """
+        Determines if the MACD cross is far enough away from the zero line
+        based on the currency pair.
 
-            Parameters:
-                symbol (str): Trading symbol, e.g., 'EURUSD', 'USDJPY', 'USDCAD'
-                macd_prev (float): Previous MACD value
-                macd_now (float): Current MACD value
+        Parameters:
+            symbol (str): Trading symbol, e.g., 'EURUSD', 'USDJPY', 'USDCAD'
+            macd_prev (float): Previous MACD value
+            macd_now (float): Current MACD value
 
-            Returns:
-                dict: {
-                    "ok": bool,         # True if distance is safe
-                    "message": str      # Explanation
-                }
-            """
-            # Set thresholds per instrument type
-            if symbol.endswith("JPYm"):
-                threshold = 0.0150   # safe for JPY pairs
-        
-            else:
-                threshold = 0.00008   # default for most pairs (EURUSD, CAD, etc.)
+        Returns:
+            dict: {
+                "ok": bool,         # True if distance is safe
+                "message": str      # Explanation
+            }
+        """
+        # Set thresholds per instrument type
+        if symbol.endswith("JPYm"):
+            threshold = 0.015  # safe for JPY pairs
 
-            good_distance = (abs(macd_prev) >= threshold) and (abs(macd_now) >= threshold)
+        else:
+            threshold = 0.00002  # default for most pairs (EURUSD, CAD, etc.)
 
-            macd_now = abs(round(macd_now, 6))
-            macd_now = f"{macd_now:.6f}"
-            threshold = f"{threshold:.6f}"
+        good_distance = (abs(macd_prev) >= threshold) and (abs(macd_now) >= threshold)
 
-            if good_distance:
-                message = f"✅ MACD cross {macd_now} for {symbol} is far enough from zero (threshold={threshold})"
-            else:
-                message = f"❌ MACD cross {macd_now} for {symbol} is too close to zero (threshold={threshold})"
+        macd_now = abs(round(macd_now, 6))
+        macd_now = f"{macd_now:.6f}"
+        threshold = f"{threshold:.6f}"
 
-            return {"ok": good_distance, "message": message}
+        if good_distance:
+            message = f"✅ MACD cross {macd_now} for {symbol} is far enough from zero (threshold={threshold})"
+        else:
+            message = f"❌ MACD cross {macd_now} for {symbol} is too close to zero (threshold={threshold})"
 
+        return {"ok": good_distance, "message": message}
 
+    def is_good_time_to_trade(self, symbol: str):
+        """
+        Returns True/False depending on whether the current Nigerian time
+        is ideal for trading the given symbol.
+        """
+
+        # --- Get current time in Nigeria ---
+        nigeria_tz = pytz.timezone("Africa/Lagos")
+        now = datetime.now(nigeria_tz).time()
+
+        # --- Session Ranges in Nigerian Time ---
+        LONDON_START = t(9, 0)
+        LONDON_END = t(12, 0)
+
+        NY_START = t(14, 0)
+        NY_END = t(17, 0)
+
+        # --- Helper: check if time is within a range ---
+        def in_session(start, end):
+            return start <= now <= end
+
+        # --- Symbol classification ---
+        symbol = symbol.upper()
+
+        is_gold = symbol.startswith("XAU")  # Gold
+        is_jpy = "JPY" in symbol  # All JPY pairs
+        is_major = symbol[:3] in [
+            "EUR",
+            "GBP",
+            "USD",
+            "AUD",
+            "CAD",
+            "NZD",
+        ]  # Normal FX majors
+
+        # ------------------------------
+        # GOLD (XAUUSD)
+        # Best: 9AM–12PM & 2PM–5PM
+        # ------------------------------
+        if is_gold:
+            if in_session(LONDON_START, LONDON_END) or in_session(NY_START, NY_END):
+                return True
+            return False
+
+        # ------------------------------
+        # JPY pairs (EURJPY, GBPJPY, USDJPY, CHFJPY, AUDJPY etc)
+        # Best: 9AM–12PM & 2PM–4PM
+        # ------------------------------
+        if is_jpy:
+            if in_session(LONDON_START, LONDON_END):
+                return True
+            if in_session(t(14, 0), t(16, 0)):  # NY overlap
+                return True
+            return False
+
+        # ------------------------------
+        # Majors (EURUSD, GBPUSD, AUDUSD, USDCAD etc)
+        # Best: 9AM–12PM & 2PM–4PM
+        # ------------------------------
+        if is_major:
+            if in_session(LONDON_START, LONDON_END):
+                return True
+            if in_session(t(14, 0), t(16, 0)):
+                return True
+            return False
+
+        # Fallback for unknown symbols
+        return False
 
     def macd_strategy(self):
         """
@@ -416,72 +431,67 @@ class TradingStrategy:
             return None
 
         # Ensure symbol pip size
-        symbol = (symbol or "")
 
-        # Pip size per symbol
-        if symbol == "XAUUSDm":
-            PIP = 0.10          # Gold
-        elif symbol.endswith("JPYm"):
-            PIP = 0.01          # All JPY pairs (USDJPYm, EURJPYm, GBPJPYm, CHFJPYm, etc.)
-        else:
-            PIP = 0.0001        # Normal FX pairs (EURUSDm, GBPUSDm, etc.)
-
+        PIP = self.get_pip_size()
 
         # Last two candles (cross detection)
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
         close_price = last["close"]
-        open_price = last['open']
-        ema_200 = last["ema_200"]
+        open_price = last["open"]
+        sma_200 = last["sma_200"]
 
         macd_now = last["macd"]
         macd_prev = prev["macd"]
         signal_now = last["macd_signal"]
         signal_prev = prev["macd_signal"]
         # MACD slope = difference between last 3 MACD values
-        slope = self.macd_lr_slope(period=10,symbol=symbol)
+        slope = self.macd_lr_slope(period=10, symbol=symbol)
         good_slope = slope.get("ok")
         distance = self.macd_zero_distance_okay(symbol, macd_prev, macd_now)
         good_distance = distance.get("ok")
+        good_time_to_trade = self.is_good_time_to_trade(symbol)
 
         # --- Trend from EMA 200 ---
-        if close_price > ema_200 and open_price > ema_200:
-            trend = 'bullish'
-        elif close_price < ema_200 and open_price < ema_200:
+        if close_price > sma_200 and open_price > sma_200:
+            trend = "bullish"
+        elif close_price < sma_200 and open_price < sma_200:
             trend = "bearish"
         else:
             trend = "inconclusive"
-            
+
         signal = None
 
         # ---------- BUY ----------
-        if trend == "bullish" and good_slope and good_distance:
+        if trend == "bullish":
             if macd_prev < signal_prev and macd_now > signal_now:
-                if macd_prev < 0:  # cross begins below zero
+                print(f"✅ MACD Cross confirmed")
+                if macd_prev < 0 and good_distance:  # cross begins below zero
                     signal = "buy"
 
         # ---------- SELL ----------
-        elif trend == "bearish" and good_slope and good_distance:
+        elif trend == "bearish":
             if macd_prev > signal_prev and macd_now < signal_now:
-                if macd_prev > 0:  # cross begins above zero
+                print(f"✅ MACD Cross confirmed")
+                if macd_prev > 0 and good_distance:  # cross begins above zero
                     signal = "sell"
 
-        # === Diagnostics Output === 
-        print("\n📊 MACD STRATEGY DIAGNOSTICS") 
+        # === Diagnostics Output ===
+        print("\n📊 MACD STRATEGY DIAGNOSTICS")
         print(f"Symbol: {symbol}")
-        print(f"Trend: {trend.upper()}") 
-        print(f"Close Price: {close_price}") 
-        print(f"EMA200: {ema_200}") 
-        print(f"MACD(prev→now): {macd_prev:.4f} → {macd_now:.4f}") 
-        print(f"Signal(prev→now): {signal_prev:.4f} → {signal_now:.4f}") 
+        print(f"Trend: {trend.upper()}")
+        print(f"Close Price: {close_price}")
+        print(f"SMA200: {sma_200}")
+        print(f"MACD(prev→now): {macd_prev:.4f} → {macd_now:.4f}")
+        print(f"Signal(prev→now): {signal_prev:.4f} → {signal_now:.4f}")
         print(f"Final Signal: {'✅ ' + signal if signal else '❌ No signal'}")
-        print(slope.get("message"))
+        # print(slope.get("message"))
         print(distance.get("message"))
-        print("=========================================================================")
-
-
-
+        print(f"good_time_to_trade: {good_time_to_trade}")
+        print(
+            "========================================================================="
+        )
 
         # No signal → stop
         if not signal:
@@ -490,41 +500,144 @@ class TradingStrategy:
         # -----------------------------
         # 📌 SL + TP in pips
         # -----------------------------
-        offset_price = PIP    # no pip offset
+        offset_price = PIP * 5  # no pip offset
 
         if signal == "buy":
             # BUY → SL 5 pips BELOW EMA200
-            sl_price = ema_200 - offset_price
+            sl_price = sma_200 - offset_price
             sl_pips = int(abs(close_price - sl_price) / PIP)
 
         elif signal == "sell":
             # SELL → SL pips ABOVE EMA200
-            sl_price = ema_200 + offset_price
+            sl_price = sma_200 + offset_price
             sl_pips = int(abs(sl_price - close_price) / PIP)
 
         # TP = 1.4 × SL
-        tp_pips = int(sl_pips * 1.4)
+        tp_pips = int(sl_pips * 6)
 
-       
+        return {"signal": signal, "sl_pips": sl_pips, "tp_pips": tp_pips}
 
-        return {
-            "signal": signal,
-            "sl_pips": sl_pips,
-            "tp_pips": tp_pips
-        }
-
-
-  
-
-
-    def ema_crossover_exit(self, timeframe=MetaTrader5.TIMEFRAME_M5):
+    def ema_strategy(self):
         """
-        EMA Crossover Exit Strategy (loop through all open positions)
-        - BUY: Exit when EMA(8) crosses below EMA(21)
-        - SELL: Exit when EMA(8) crosses above EMA(21)
-        - Fetches live M5 data per symbol for accurate EMA confirmation
+        EMA20/EMA50 strict crossover strategy with diagnostics
+        + Candle body filter
+        + H1 trend filter
+        + Consolidation filter
+        + TP = 150 pips, SL = EMA50
         """
+        self.compute_indicators()
 
+        df = self.data.get("data_M5", pd.DataFrame())
+        if df.empty:
+            print("⚠️ No M5 data available")
+            return None
+
+        trend = self.get_higher_tf_trend()
+        if trend is None:
+            print("⚠️ Cannot determine H1 trend")
+            return None
+
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        # --- Prices ---
+        open_price = last["open"]
+        close_price = last["close"]
+        high_price = last["high"]
+        low_price = last["low"]
+
+        # --- Candle info ---
+        body_high = max(open_price, close_price)
+        body_low = min(open_price, close_price)
+        candle_size = abs(close_price - open_price)
+        candle_range = high_price - low_price
+
+        max_body = 0.003 * close_price
+        min_range = 0.003 * close_price
+
+        # --- EMAs ---
+        ema20_prev, ema20_curr = prev["ema_fast"], last["ema_fast"]
+        ema50_prev, ema50_curr = prev["ema_slow"], last["ema_slow"]
+
+        ema_distance = abs(ema20_curr - ema50_curr)
+        min_distance = 0.002 * close_price
+
+        # --- Diagnostic prints ---
+        print(f"\n📊 EMA Strategy Diagnostics for {self.symbol}")
+        print(f"   Trend H1: {trend}")
+        print(f"   Last Close: {close_price:.5f}, Open: {open_price:.5f}")
+        print(f"   Candle size: {candle_size:.5f}, range: {candle_range:.5f}")
+        print(f"   EMA20 prev/curr: {ema20_prev:.5f}/{ema20_curr:.5f}")
+        print(f"   EMA50 prev/curr: {ema50_prev:.5f}/{ema50_curr:.5f}")
+        print(f"   EMA distance: {ema_distance:.5f} (min required: {min_distance:.5f})")
+
+        # --- Consolidation filter ---
+        # if ema_distance < min_distance:
+        #     print("⛔ Consolidation: EMAs too close")
+        #     return None
+        # if candle_size > max_body:
+        #     print("⛔ Candle too long — skipping this crossover")
+        #     return None
+
+        # --- Pip size ---
+        pip_size = self.get_pip_size()  # make sure this returns float
+        tp_pips = 150
+        signal = None
+        sl_pips = None
+        offset_price = pip_size * 5  # no pip offset
+
+        # --- BUY conditions ---
+        buy_conditions = [
+            ema20_prev <= ema50_prev and ema20_curr > ema50_curr,  # cross up
+            trend == "bullish",
+            body_low > ema20_curr and body_low > ema50_curr,  # candle above EMAs
+            candle_size <= max_body,
+        ]
+        print("   Buy conditions check:")
+        print(f"      Cross UP: {buy_conditions[0]}")
+        print(f"      Trend Bullish: {buy_conditions[1]}")
+        print(f"      Body Above EMAs: {buy_conditions[2]}")
+        print(f"      Candle Size OK: {buy_conditions[3]}")
+
+        if all(buy_conditions):
+            # BUY → SL 5 pips BELOW EMA200
+            signal = "buy"
+            sl_price = ema50_curr - offset_price
+            sl_pips = int(abs(close_price - sl_price) / pip_size)
+            print(f"✅ BUY signal generated: SL={sl_pips:.5f}, TP={tp_pips:.5f}")
+            return {"signal": signal, "sl_pips": sl_pips, "tp_pips": tp_pips}
+
+        # --- SELL conditions ---
+        sell_conditions = [
+            ema20_prev >= ema50_prev and ema20_curr < ema50_curr,  # cross down
+            trend == "bearish",
+            body_high < ema20_curr and body_high < ema50_curr,  # candle below EMAs
+            candle_size <= max_body,
+        ]
+        print("   Sell conditions check:")
+        print(f"      Cross DOWN: {sell_conditions[0]}")
+        print(f"      Trend Bearish: {sell_conditions[1]}")
+        print(f"      Body Below EMAs: {sell_conditions[2]}")
+        print(f"      Candle Size OK: {sell_conditions[3]}")
+
+        if all(sell_conditions):
+            signal = "sell"
+            # SELL → SL pips ABOVE EMA200
+            sl_price = ema50_curr + offset_price
+            sl_pips = int(abs(sl_price - close_price) / pip_size)
+            print(f"✅ SELL signal generated: SL={sl_pips:.5f}, TP={tp_pips:.5f}")
+            return {"signal": signal, "sl_pips": sl_pips, "tp_pips": tp_pips}
+
+        print("❌ No trade signal this candle")
+        return None
+
+    def ema_exit(self, timeframe=MetaTrader5.TIMEFRAME_M5):
+        """
+        EMA20/EMA50 Exit Strategy:
+        - BUY: exit when EMA20 crosses BELOW EMA50
+        - SELL: exit when EMA20 crosses ABOVE EMA50
+        - Evaluates all open positions
+        """
         positions = MetaTrader5.positions_get()
         if not positions:
             print("⚠️ No open positions to evaluate for EMA exit.")
@@ -532,14 +645,16 @@ class TradingStrategy:
 
         exit_trades = []
 
-        print("\n🧭 EMA CROSSOVER EXIT CHECK (live data per symbol)")
+        print("\n🧭 EMA20/EMA50 EXIT CHECK")
         print(f"Total open positions: {len(positions)}\n")
 
         for pos in positions:
             symbol = pos.symbol
-            position_type = "buy" if pos.type == MetaTrader5.POSITION_TYPE_BUY else "sell"
+            position_type = (
+                "buy" if pos.type == MetaTrader5.POSITION_TYPE_BUY else "sell"
+            )
 
-            # === Get live M5 data for this symbol ===
+            # --- Fetch live M5 data ---
             rates = MetaTrader5.copy_rates_from_pos(symbol, timeframe, 0, 50)
             if rates is None or len(rates) < 2:
                 print(f"⚠️ Not enough M5 data for {symbol} — skipping.")
@@ -548,56 +663,66 @@ class TradingStrategy:
             df = pd.DataFrame(rates)
             df["time"] = pd.to_datetime(df["time"], unit="s")
 
-            # === Compute EMAs ===
-            df["ema_8"] = df["close"].ewm(span=8, adjust=False).mean()
-            df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
+            # --- Compute EMA20 (fast) and EMA50 (slow) ---
+            df["ema_fast"] = EMAIndicator(df["close"], window=20).ema_indicator()
+            df["ema_slow"] = EMAIndicator(df["close"], window=50).ema_indicator()
 
             if len(df) < 2:
                 print(f"⚠️ Not enough EMA data for {symbol} — skipping.")
                 continue
 
-            # === Check last crossover ===
-            fast_prev, fast_curr = df["ema_8"].iloc[-2], df["ema_8"].iloc[-1]
-            slow_prev, slow_curr = df["ema_21"].iloc[-2], df["ema_21"].iloc[-1]
+            fast_prev, fast_curr = df["ema_fast"].iloc[-2], df["ema_fast"].iloc[-1]
+            slow_prev, slow_curr = df["ema_slow"].iloc[-2], df["ema_slow"].iloc[-1]
 
             should_exit = False
             exit_note = ""
 
-            # BUY exit: fast EMA crosses below slow EMA
-            if position_type == "buy" and fast_prev >= slow_prev and fast_curr < slow_curr:
+            # --- BUY exit ---
+            if (
+                position_type == "buy"
+                and fast_prev >= slow_prev
+                and fast_curr < slow_curr
+            ):
                 should_exit = True
-                exit_note = "EMA(8) crossed below EMA(21) — exit BUY"
+                exit_note = "EMA20 crossed below EMA50 — exit BUY"
 
-            # SELL exit: fast EMA crosses above slow EMA
-            elif position_type == "sell" and fast_prev <= slow_prev and fast_curr > slow_curr:
+            # --- SELL exit ---
+            elif (
+                position_type == "sell"
+                and fast_prev <= slow_prev
+                and fast_curr > slow_curr
+            ):
                 should_exit = True
-                exit_note = "EMA(8) crossed above EMA(21) — exit SELL"
+                exit_note = "EMA20 crossed above EMA50 — exit SELL"
 
             status = "🚪 EXIT" if should_exit else "⏳ HOLD"
-            print(f"🔹 {symbol}: {position_type.upper()} | EMA8={fast_curr:.5f} EMA21={slow_curr:.5f} | {status} — {exit_note}")
+            print(
+                f"🔹 {symbol}: {position_type.upper()} | EMA20={fast_curr:.5f} EMA50={slow_curr:.5f} | {status} — {exit_note}"
+            )
 
             if should_exit:
                 trade_info = {
                     "symbol": symbol,
                     "ticket": pos.ticket,
                     "position": position_type,
-                    "ema8": fast_curr,
-                    "ema21": slow_curr,
+                    "ema_fast": fast_curr,
+                    "ema_slow": slow_curr,
                     "exit_reason": exit_note,
                 }
                 exit_trades.append(trade_info)
 
-        # === Execute exits ===
+        # --- Execute exits ---
         if exit_trades:
-            print("\n⚙️ Executing EMA-based exits...\n")
+            print("\n⚙️ Executing EMA20/EMA50-based exits...\n")
             for trade in exit_trades:
                 self.close_position(trade)
-                print(f"✅ Closed {trade['symbol']} ({trade['position'].upper()}) | EMA8={trade['ema8']:.5f} EMA21={trade['ema21']:.5f}")
+                print(
+                    f"✅ Closed {trade['symbol']} ({trade['position'].upper()}) | EMA20={trade['ema_fast']:.5f} EMA50={trade['ema_slow']:.5f}"
+                )
         else:
             print("\n✅ All positions still valid — no EMA cross exit yet.")
 
         return exit_trades
-
 
     def close_position(self, trade):
         """
@@ -641,18 +766,55 @@ class TradingStrategy:
         for attempt in range(3):
             result = MetaTrader5.order_send(request)
             if result and result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
-                print(f"✅ Closed {symbol} ({position_type.upper()}) successfully | Ticket={ticket}")
+                print(
+                    f"✅ Closed {symbol} ({position_type.upper()}) successfully | Ticket={ticket}"
+                )
                 return
             else:
-                print(f"⚠️ Attempt {attempt+1} failed to close {symbol} | Code={getattr(result, 'retcode', 'N/A')}")
-        
+                print(
+                    f"⚠️ Attempt {attempt+1} failed to close {symbol} | Code={getattr(result, 'retcode', 'N/A')}"
+                )
+
         print(f"❌ Failed to close {symbol} after 3 attempts.")
 
-
-    
     # ------------------------------------------------------------
     # 🧩 RUNNER
     # ------------------------------------------------------------
+
+    def strategy_loop(self):
+        # self.ema_exit()
+        meta_config = MetaTraderConfig()
+        for symbol in self.symbols:
+            self.symbol = symbol
+            data_H1 = meta_config.get_market_data_rate(
+                symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_H1
+            )
+            data_M5 = meta_config.get_market_data_rate(
+                symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_M5
+            )
+
+            self.data = {"data_H1": data_H1, "data_M5": data_M5}
+
+            response = self.run_strategy()
+            if response is None:
+                continue
+            signal = response.get("signal")
+            sl_pips = response.get("sl_pips")
+            tp_pips = response.get("tp_pips")
+
+            if signal:
+                print(f"{symbol}: Signal = {signal.upper()}")
+                meta_config.execute_trade(
+                    symbol,
+                    signal,
+                    sl_pips=sl_pips,
+                    tp_pips=tp_pips,
+                    lot_size=self.lot_size,
+                    strategy=self.strategy,
+                )
+            else:
+                print(f"{symbol}: No trade signal.")
+
     def run_strategy(self):
         """Select and execute the chosen strategy."""
         print(f"\n🚀 Running {self.strategy.upper()} strategy")
@@ -673,16 +835,16 @@ class MetaTraderConfig:
 
     def get_timeframe_duration(self, timeframe):
         mapping = {
-            MetaTrader5.TIMEFRAME_M1:  60,
-            MetaTrader5.TIMEFRAME_M2:  120,
-            MetaTrader5.TIMEFRAME_M3:  180,
-            MetaTrader5.TIMEFRAME_M4:  240,
-            MetaTrader5.TIMEFRAME_M5:  300,
+            MetaTrader5.TIMEFRAME_M1: 60,
+            MetaTrader5.TIMEFRAME_M2: 120,
+            MetaTrader5.TIMEFRAME_M3: 180,
+            MetaTrader5.TIMEFRAME_M4: 240,
+            MetaTrader5.TIMEFRAME_M5: 300,
             MetaTrader5.TIMEFRAME_M15: 900,
             MetaTrader5.TIMEFRAME_M30: 1800,
-            MetaTrader5.TIMEFRAME_H1:  3600,
-            MetaTrader5.TIMEFRAME_H4:  14400,
-            MetaTrader5.TIMEFRAME_D1:  86400,
+            MetaTrader5.TIMEFRAME_H1: 3600,
+            MetaTrader5.TIMEFRAME_H4: 14400,
+            MetaTrader5.TIMEFRAME_D1: 86400,
         }
         return mapping.get(timeframe, 60)  # default 60 sec if not found
 
@@ -692,11 +854,11 @@ class MetaTraderConfig:
         param project settings: json object with username,pasword,server,file location
         return boolean true started
         """
-        username = project_settings["mt5"]["username"]
+        username = project_settings["username"]
         username = int(username)
-        password = project_settings["mt5"]["password"]
-        server = project_settings["mt5"]["server"]
-        mt5_pathway = project_settings["mt5"]["mt5_pathway"]
+        password = project_settings["password"]
+        server = project_settings["server"]
+        mt5_pathway = project_settings["mt5_pathway"]
 
         # Attempt to initialize Mt5
         mt5_init = False
@@ -712,7 +874,7 @@ class MetaTraderConfig:
         self.username = username
         self.password = password
         self.server = server
-        self.login_mt5()
+        return self.login_mt5()
 
     def login_mt5(self):
         mt5_login = False
@@ -778,10 +940,12 @@ class MetaTraderConfig:
         Returns:
             pd.DataFrame: Historical OHLCV data with time converted to datetime.
         """
+
         rate = int(rate)
         MetaTrader5.symbol_select(symbol)
         rates = MetaTrader5.copy_rates_from_pos(symbol, timeframe, 0, rate)
         data = pd.DataFrame(rates)
+        print(data)
         data["time"] = pd.to_datetime(data["time"], unit="s")
         if download:
             self.export_data(
@@ -865,7 +1029,7 @@ class MetaTraderConfig:
         print(f"✅ File saved successfully: {filepath}")
         return filepath
 
-    def can_trade_symbol(self, symbol, cooldown_minutes=1):
+    def can_trade_symbol(self, symbol, cooldown_minutes=0):
         """
         Determines if a symbol can be traded based on:
         1. No open positions for the symbol
@@ -902,6 +1066,77 @@ class MetaTraderConfig:
         print(f"✅ {symbol} is free to trade.")
         return True
 
+    def calculate_trade_risk(
+            self, symbol, signal, entry_price, lot=0.01, sl_pips=None, tp_pips=None
+        ):
+            """
+            Calculates SL/TP prices and potential gain/loss in USD, safely for FX, metals, and crypto.
+
+            sl_pips / tp_pips are in pips (for FX) or price units (for non-FX).
+
+            Returns:
+                {
+                    "sl_price": ...,
+                    "tp_price": ...,
+                    "potential_loss_usd": ...,
+                    "potential_gain_usd": ...
+                }
+            """
+            info = MetaTrader5.symbol_info(symbol)
+            if info is None:
+                raise ValueError(f"Symbol info not found for {symbol}")
+
+            point = info.point
+            contract_size = info.trade_contract_size
+            tick_size = info.trade_tick_size
+            min_stop = info.trade_stops_level * point
+
+            # --- Detect pip size automatically ---
+            # Forex (EURUSD, GBPUSD) usually 0.0001, JPY pairs 0.01
+            if symbol.endswith(("USD", "USDm")) and point == 0.00001:
+                pip_size = 0.0001
+            elif "JPY" in symbol:
+                pip_size = 0.01
+            else:
+                pip_size = point  # metals/crypto use price unit as pip
+
+            # --- Convert pips to price distance ---
+            if sl_pips is not None:
+                sl_distance = sl_pips * pip_size
+            else:
+                sl_distance = min_stop * 2
+
+            if tp_pips is not None:
+                tp_distance = tp_pips * pip_size
+            else:
+                tp_distance = sl_distance * 2  # 2:1 R:R
+
+            # --- SL/TP based on signal ---
+            if signal.lower() == "buy":
+                sl_price = entry_price - sl_distance
+                tp_price = entry_price + tp_distance
+            elif signal.lower() == "sell":
+                sl_price = entry_price + sl_distance
+                tp_price = entry_price - tp_distance
+            else:
+                raise ValueError("Signal must be 'buy' or 'sell'")
+
+            # --- Round to tick size ---
+            sl_price = round(sl_price / tick_size) * tick_size
+            tp_price = round(tp_price / tick_size) * tick_size
+
+            # --- USD risk/gain estimation ---
+            pip_value = contract_size * pip_size * lot
+            potential_loss_usd = abs(entry_price - sl_price) / pip_size * pip_value
+            potential_gain_usd = abs(tp_price - entry_price) / pip_size * pip_value
+
+            return {
+                "sl_price": sl_price,
+                "tp_price": tp_price,
+                "potential_loss_usd": round(potential_loss_usd, 2),
+                "potential_gain_usd": round(potential_gain_usd, 2),
+            }
+
     def execute_trade(
         self,
         symbol,
@@ -915,7 +1150,6 @@ class MetaTraderConfig:
         """Executes a buy or sell order in MetaTrader 5."""
 
         can_trade = self.can_trade_symbol(symbol, cooldown_minutes=20)
-        
 
         if not can_trade:
             return
@@ -963,128 +1197,32 @@ class MetaTraderConfig:
         else:
             print(f"✅ Trade executed for {symbol}: {signal.upper()} at {price}")
 
-    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5, trail=False):
+    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5,trail=True):
         """Continuously fetch data, apply strategy, and trade."""
         delay = self.get_timeframe_duration(timeframe=timeframe)
-        account_info = MetaTrader5.account_info()
-        balance = account_info.balance
-        lot_size = self.calculate_lot(balance)
-        print(f"Calculated lot size: {lot_size} for balance: {balance}")
 
         while True:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
             if trail:
                 self.update_trailing_stop()
+            account_info = MetaTrader5.account_info()
+            balance = account_info.balance
+            lot_size = self.calculate_lot(balance)
+            print(f"Calculated lot size: {lot_size} for balance: {balance}")
+
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
             print(f"\n🔄 Checking markets...{now}")
-            
 
-            for symbol in symbols:
-                data_H1 = self.get_market_data_rate(
-                    symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_H1
-                )
-                data_M5 = self.get_market_data_rate(
-                    symbol=symbol, timeframe=MetaTrader5.TIMEFRAME_M5
-                )
-
-                data = {"data_H1": data_H1, "data_M5": data_M5}
-                strategy = "macd_strategy"  # or "rsi_strategy", "hybrid"
-                trading_strategy = TradingStrategy(data=data, strategy=strategy,symbol=symbol)
-                response = trading_strategy.run_strategy()
-                if response is None:
-                    continue
-                signal = response.get("signal") 
-                sl_pips = response.get("sl_pips") 
-                tp_pips = response.get("tp_pips") 
-
-                if signal:
-                    print(f"{symbol}: Signal = {signal.upper()}")
-                    self.execute_trade(
-                        symbol,
-                        signal,
-                        sl_pips=sl_pips,
-                        tp_pips=tp_pips,
-                        lot_size=lot_size,
-                        strategy=strategy,
-                    )
-                else:
-                    print(f"{symbol}: No trade signal.")
+            strategy = "macd_strategy"
+            trading_strategy = TradingStrategy(
+                strategy=strategy, symbols=symbols, lot_size=lot_size
+            )
+            trading_strategy.strategy_loop()
 
             print("💰 Balance:", f"${balance}")
 
             print(f"🕐 Delaying loop for {delay} seconds ({timeframe}) timeframe...\n")
             time.sleep(delay)
-
-    def calculate_trade_risk(
-        self, symbol, signal, entry_price, lot=0.01, sl_pips=None, tp_pips=None
-    ):
-        """
-        Calculates SL/TP prices and potential gain/loss in USD, safely for FX, metals, and crypto.
-
-        sl_pips / tp_pips are in pips (for FX) or price units (for non-FX).
-
-        Returns:
-            {
-                "sl_price": ...,
-                "tp_price": ...,
-                "potential_loss_usd": ...,
-                "potential_gain_usd": ...
-            }
-        """
-        info = MetaTrader5.symbol_info(symbol)
-        if info is None:
-            raise ValueError(f"Symbol info not found for {symbol}")
-
-        point = info.point
-        contract_size = info.trade_contract_size
-        tick_size = info.trade_tick_size
-        min_stop = info.trade_stops_level * point
-
-        # --- Detect pip size automatically ---
-        # Forex (EURUSD, GBPUSD) usually 0.0001, JPY pairs 0.01
-        if symbol.endswith(("USD", "USDm")) and point == 0.00001:
-            pip_size = 0.0001
-        elif "JPY" in symbol:
-            pip_size = 0.01
-        else:
-            pip_size = point  # metals/crypto use price unit as pip
-
-        # --- Convert pips to price distance ---
-        if sl_pips is not None:
-            sl_distance = sl_pips * pip_size
-        else:
-            sl_distance = min_stop * 2
-
-        if tp_pips is not None:
-            tp_distance = tp_pips * pip_size
-        else:
-            tp_distance = sl_distance * 2  # 2:1 R:R
-
-        # --- SL/TP based on signal ---
-        if signal.lower() == "buy":
-            sl_price = entry_price - sl_distance
-            tp_price = entry_price + tp_distance
-        elif signal.lower() == "sell":
-            sl_price = entry_price + sl_distance
-            tp_price = entry_price - tp_distance
-        else:
-            raise ValueError("Signal must be 'buy' or 'sell'")
-
-        # --- Round to tick size ---
-        sl_price = round(sl_price / tick_size) * tick_size
-        tp_price = round(tp_price / tick_size) * tick_size
-
-        # --- USD risk/gain estimation ---
-        pip_value = contract_size * pip_size * lot
-        potential_loss_usd = abs(entry_price - sl_price) / pip_size * pip_value
-        potential_gain_usd = abs(tp_price - entry_price) / pip_size * pip_value
-
-        return {
-            "sl_price": sl_price,
-            "tp_price": tp_price,
-            "potential_loss_usd": round(potential_loss_usd, 2),
-            "potential_gain_usd": round(potential_gain_usd, 2),
-        }
 
     def update_trailing_stop(self, deviation=10):
         """
@@ -1192,11 +1330,11 @@ class MetaTraderConfig:
                                 f"❌ Failed to modify SL for SELL {symbol}: {result.comment}"
                             )
 
-
-    def calculate_lot(self,balance):
+    def calculate_lot(self, balance):
         """
         Calculate a safe lot size based on account balance.
         Minimum lot size is 0.01.
         """
-        lot = max(round(balance / 1000, 2), 0.01)
-        return lot
+        raw = balance / 1000
+        lot = math.floor(raw * 100) / 100  # floor to 2 decimals
+        return max(lot, 0.01)
