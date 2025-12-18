@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any, List
 class MetaTraderConfig:
     """
     MetaTrader 5 connection, data fetching, and trade execution manager.
-    
+
     Features:
     - MT5 initialization and connection management
     - Historical data fetching with validation
@@ -50,7 +50,7 @@ class MetaTraderConfig:
     def start_mt5(self, project_settings: Dict[str, Any]) -> bool:
         """
         Initialize and connect to MetaTrader 5.
-        
+
         Args:
             project_settings: Dictionary containing MT5 credentials:
                 {
@@ -61,7 +61,7 @@ class MetaTraderConfig:
                         "mt5_pathway": "C:/Program Files/MetaTrader 5/terminal64.exe"
                     }
                 }
-        
+
         Returns:
             True if successful, False otherwise
         """
@@ -77,7 +77,7 @@ class MetaTraderConfig:
                 login=self.username,
                 password=self.password,
                 server=self.server,
-                path=mt5_pathway
+                path=mt5_pathway,
             )
 
             if not self.mt5_init:
@@ -104,7 +104,7 @@ class MetaTraderConfig:
     def login_mt5(self) -> bool:
         """
         Login to MT5 account.
-        
+
         Returns:
             True if login successful, False otherwise
         """
@@ -114,9 +114,7 @@ class MetaTraderConfig:
 
         try:
             login_success = mt5.login(
-                login=self.username,
-                password=self.password,
-                server=self.server
+                login=self.username, password=self.password, server=self.server
             )
 
             if not login_success:
@@ -134,7 +132,7 @@ class MetaTraderConfig:
     def check_connection(self) -> bool:
         """
         Verify MT5 connection status.
-        
+
         Returns:
             True if connected, False otherwise
         """
@@ -157,10 +155,10 @@ class MetaTraderConfig:
     def get_timeframe_duration(self, timeframe: int) -> int:
         """
         Get duration in seconds for a given MT5 timeframe.
-        
+
         Args:
             timeframe: MT5 timeframe constant (e.g., mt5.TIMEFRAME_M15)
-            
+
         Returns:
             Duration in seconds (default: 60 if unknown)
         """
@@ -177,11 +175,11 @@ class MetaTraderConfig:
         start_date: datetime = None,
         end_date: datetime = None,
         no_of_candles: Optional[int] = None,
-        download: Optional[str] = None
+        download: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Fetch historical OHLCV data from MetaTrader 5.
-        
+
         Args:
             symbol: Trading symbol (e.g., 'EURUSD', 'EURUSDm')
             timeframe: MT5 timeframe constant (e.g., mt5.TIMEFRAME_M15)
@@ -189,7 +187,7 @@ class MetaTraderConfig:
             end_date: End datetime for historical data
             no_of_candles: Number of candles to fetch (overrides date range)
             download: Export format ('csv' or 'xlsx'), None to skip export
-            
+
         Returns:
             DataFrame with columns: time, open, high, low, close, tick_volume
             Returns empty DataFrame if no data available
@@ -219,19 +217,11 @@ class MetaTraderConfig:
             if no_of_candles is not None:
                 # Fetch specific number of candles from start_date
                 data = mt5.copy_rates_from(
-                    symbol,
-                    timeframe,
-                    start_date,
-                    int(no_of_candles)
+                    symbol, timeframe, start_date, int(no_of_candles)
                 )
             else:
                 # Fetch data in date range
-                data = mt5.copy_rates_range(
-                    symbol,
-                    timeframe,
-                    start_date,
-                    end_date
-                )
+                data = mt5.copy_rates_range(symbol, timeframe, start_date, end_date)
 
         except Exception as e:
             print(f"❌ Error fetching data for {symbol}: {e}")
@@ -266,7 +256,9 @@ class MetaTraderConfig:
 
         # Optional export
         if download:
-            self.export_data(df, filename=f"{symbol.lower()}_market_data", filetype=download)
+            self.export_data(
+                df, filename=f"{symbol.lower()}_market_data", filetype=download
+            )
 
         return df
 
@@ -278,16 +270,16 @@ class MetaTraderConfig:
         self,
         start_time: datetime,
         end_time: datetime,
-        symbols: Optional[List[str]] = None
+        symbols: Optional[List[str]] = None,
     ) -> pd.DataFrame:
         """
         Retrieve closed trades from MT5 in a given time range.
-        
+
         Args:
             start_time: Start of history period
             end_time: End of history period
             symbols: List of symbols to filter (None for all)
-            
+
         Returns:
             DataFrame with trade history
         """
@@ -311,17 +303,21 @@ class MetaTraderConfig:
             for deal in history:
                 # Only include closed positions (with profit/loss)
                 if deal.profit != 0:
-                    all_data.append({
-                        "ticket": deal.ticket,
-                        "symbol": deal.symbol,
-                        "time": datetime.fromtimestamp(deal.time, tz=timezone.utc),
-                        "type": "buy" if deal.type == 0 else "sell",
-                        "volume": deal.volume,
-                        "price": deal.price,
-                        "profit": deal.profit,
-                        "comment": deal.comment,
-                        "exit_reason": "hit_sl" if "sl" in deal.comment.lower() else "hit_tp"
-                    })
+                    all_data.append(
+                        {
+                            "ticket": deal.ticket,
+                            "symbol": deal.symbol,
+                            "time": datetime.fromtimestamp(deal.time, tz=timezone.utc),
+                            "type": "buy" if deal.type == 0 else "sell",
+                            "volume": deal.volume,
+                            "price": deal.price,
+                            "profit": deal.profit,
+                            "comment": deal.comment,
+                            "exit_reason": (
+                                "hit_sl" if "sl" in deal.comment.lower() else "hit_tp"
+                            ),
+                        }
+                    )
 
         if not all_data:
             print("⚠️ No closed trades found in this period")
@@ -335,17 +331,26 @@ class MetaTraderConfig:
     # ============================================================
     # TRADE EXECUTION
     # ============================================================
+    def get_open_trades_count(self, symbol=None):
+        positions = mt5.positions_get()
+        if positions is None:
+            return 0
+
+        if symbol:
+            return sum(1 for p in positions if p.symbol == symbol)
+
+        return len(positions)
 
     def can_trade_symbol(self, symbol: str, cooldown_minutes: int = 0) -> bool:
         """
         Check if a symbol can be traded based on:
         1. No open positions for the symbol
         2. Cooldown period since last closed trade
-        
+
         Args:
             symbol: Trading symbol
             cooldown_minutes: Minutes to wait after closing a trade (default: 0)
-            
+
         Returns:
             True if symbol can be traded, False otherwise
         """
@@ -359,22 +364,25 @@ class MetaTraderConfig:
         if cooldown_minutes > 0:
             now = datetime.now(timezone.utc)
             from_time = now - timedelta(days=1)
-            
+
             closed_trades = mt5.history_deals_get(from_time, now, group=symbol)
             if closed_trades:
                 exit_deals = [
-                    deal for deal in closed_trades
-                    if deal.entry == mt5.DEAL_ENTRY_OUT
+                    deal for deal in closed_trades if deal.entry == mt5.DEAL_ENTRY_OUT
                 ]
-                
+
                 if exit_deals:
                     last_close_time = max(deal.time for deal in exit_deals)
-                    last_close_dt = datetime.fromtimestamp(last_close_time, tz=timezone.utc)
+                    last_close_dt = datetime.fromtimestamp(
+                        last_close_time, tz=timezone.utc
+                    )
                     time_diff = now - last_close_dt
-                    
+
                     if time_diff < timedelta(minutes=cooldown_minutes):
                         mins_elapsed = int(time_diff.total_seconds() // 60)
-                        print(f"⏳ {symbol} closed {mins_elapsed} min ago — cooling down")
+                        print(
+                            f"⏳ {symbol} closed {mins_elapsed} min ago — cooling down"
+                        )
                         return False
 
         print(f"✅ {symbol} is available for trading")
@@ -386,18 +394,18 @@ class MetaTraderConfig:
         account_risk_percent: float = 1.0,
         stop_loss_pips: Optional[float] = None,
         entry_price: Optional[float] = None,
-        stop_price: Optional[float] = None
+        stop_price: Optional[float] = None,
     ) -> float:
         """
         Calculate position size based on account risk.
-        
+
         Args:
             symbol: Trading symbol
             account_risk_percent: Percentage of account to risk (default: 1.0%)
             stop_loss_pips: Stop loss in pips (optional)
             entry_price: Entry price (optional, uses current price if None)
             stop_price: Stop loss price (optional)
-            
+
         Returns:
             Lot size (volume)
         """
@@ -430,16 +438,18 @@ class MetaTraderConfig:
         # Calculate lot size
         if stop_distance > 0:
             lot_size = risk_amount / (stop_distance / tick_size * tick_value)
-            
+
             # Round to symbol's volume step
             volume_step = symbol_info.volume_step
             lot_size = round(lot_size / volume_step) * volume_step
-            
+
             # Ensure within limits
-            lot_size = max(symbol_info.volume_min, min(lot_size, symbol_info.volume_max))
-            
+            lot_size = max(
+                symbol_info.volume_min, min(lot_size, symbol_info.volume_max)
+            )
+
             return lot_size
-        
+
         return 0.01
 
     def execute_trade(
@@ -452,11 +462,11 @@ class MetaTraderConfig:
         lot_size: Optional[float] = None,
         deviation: int = 10,
         strategy_name: str = "auto_strategy",
-        cooldown_minutes: int = 20
+        cooldown_minutes: int = 20,
     ) -> bool:
         """
         Execute a buy or sell trade in MetaTrader 5.
-        
+
         Args:
             symbol: Trading symbol
             signal: 'buy' or 'sell'
@@ -467,7 +477,7 @@ class MetaTraderConfig:
             deviation: Maximum price slippage in points
             strategy_name: Strategy identifier for comments
             cooldown_minutes: Minutes to wait before trading same symbol again
-            
+
         Returns:
             True if trade executed successfully, False otherwise
         """
@@ -501,7 +511,7 @@ class MetaTraderConfig:
                     symbol,
                     account_risk_percent=1.0,
                     entry_price=price,
-                    stop_price=stop_loss
+                    stop_price=stop_loss,
                 )
             else:
                 lot_size = 0.01
@@ -528,14 +538,16 @@ class MetaTraderConfig:
 
         # Execute trade
         result = mt5.order_send(request)
-        
+
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             print(f"❌ Trade failed for {symbol}")
             print(f"   Return code: {result.retcode}")
             print(f"   Comment: {result.comment}")
             return False
 
-        print(f"✅ Trade executed: {signal.upper()} {lot_size} lots of {symbol} @ {price}")
+        print(
+            f"✅ Trade executed: {signal.upper()} {lot_size} lots of {symbol} @ {price}"
+        )
         if stop_loss:
             print(f"   SL: {stop_loss}")
         if take_profit:
@@ -548,19 +560,16 @@ class MetaTraderConfig:
     # ============================================================
 
     def export_data(
-        self,
-        data: pd.DataFrame,
-        filename: str = "market_data",
-        filetype: str = "csv"
+        self, data: pd.DataFrame, filename: str = "market_data", filetype: str = "csv"
     ) -> Optional[str]:
         """
         Export DataFrame to CSV or Excel.
-        
+
         Args:
             data: DataFrame to export
             filename: File name without extension
             filetype: 'csv' or 'xlsx'
-            
+
         Returns:
             Full path to saved file, or None if failed
         """

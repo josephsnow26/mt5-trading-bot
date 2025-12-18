@@ -3,7 +3,7 @@ from decouple import config
 from symbols import get_symbols
 import pandas as pd
 from trading_manager import TradeManager  # your TradeManager class
-from mt5_lib import MetaTraderConfig
+from meter_trader_config import MetaTraderConfig
 from datetime import datetime, timedelta
 import time
 from datetime import datetime, timezone
@@ -16,6 +16,26 @@ Shows clean integration and proper error handling.
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
 from macd_strategy import MACDTrendStrategy
+
+
+live = True
+if live:
+    mt5_config = {
+        "username": config("MT5_USERNAME"),
+        "password": config("MT5_PASSWORD"),
+        "server": config("MT5_SERVER"),
+        "mt5_pathway": config("MT5_PATHWAY"),
+    }
+else:
+    mt5_config = {
+        "username": config("MT5_USERNAME_TRIAL"),
+        "password": config("MT5_PASSWORD_TRIAL"),
+        "server": config("MT5_SERVER_TRIAL"),
+        "mt5_pathway": config("MT5_PATHWAY"),
+    }
+
+
+project_settings = mt5_config
 
 
 def main():
@@ -130,6 +150,18 @@ def main():
                 print(
                     f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward/risk:.1f}"
                 )
+
+                MAX_OPEN_TRADES = 3
+
+                open_trades = mt5_config.get_open_trades_count()
+
+                if open_trades >= MAX_OPEN_TRADES:
+                    print(
+                        f"   🚫 Trade skipped — open trades limit reached "
+                        f"({open_trades}/{MAX_OPEN_TRADES})"
+                    )
+                else:
+                    print(f"   🚫 Trade count — open trades  " f"({open_trades})")
 
                 # Execute trade (optional - uncomment to enable live trading)
                 execute = "y"

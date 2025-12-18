@@ -9,9 +9,12 @@ from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
 from main import project_settings
 
+
 # 1. Setup MT5
 mt5_config = MetaTraderConfig()
+print(project_settings)
 mt5_config.start_mt5(project_settings)
+
 
 # MT5 timeframe mapping
 MT5_TIMEFRAME_MAP = {
@@ -32,7 +35,7 @@ timeframe = MetaTrader5.TIMEFRAME_M15
 data_provider = MT5DataProvider(mt5_config)
 
 # 3. Fetch data
-symbols = ["USDJPYm","EURUSDm","GPBUSD"]  # Example symbols
+symbols = ["USDJPYm","EURUSDm","GPBUSDm"]  # Example symbols
 data_dict = data_provider.fetch_multiple_symbols(
     symbols=symbols,
     timeframe=timeframe,

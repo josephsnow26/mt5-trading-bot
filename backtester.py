@@ -48,34 +48,11 @@ class Backtester:
 
     def prepare_price_windows(self, df, lookback_bars=250):
         """
-        Convert dataframe to rolling windows for strategy
-
-        Parameters:
-        -----------
-        df : pd.DataFrame
-            OHLC dataframe with columns: time, open, high, low, close
-        lookback_bars : int
-            Number of bars to include in each window
-
-        Returns:
-        --------
-        list
-            List of price_data dicts for each bar
+        Yield rolling pandas DataFrame windows
         """
-        price_windows = []
-
         for i in range(lookback_bars, len(df)):
-            window = {
-                "close": df["close"].iloc[i - lookback_bars : i + 1].values,
-                "high": df["high"].iloc[i - lookback_bars : i + 1].values,
-                "low": df["low"].iloc[i - lookback_bars : i + 1].values,
-                "open": df["open"].iloc[i - lookback_bars : i + 1].values,
-                "time": df["time"].iloc[i],
-                "bar_index": i,
-            }
-            price_windows.append(window)
-
-        return price_windows
+            window_df = df.iloc[i - lookback_bars : i + 1].copy()
+            yield window_df, i
 
     def calculate_position_size(
     self, entry_price, stop_loss, risk_percent=2, max_lots=5.0
@@ -322,12 +299,11 @@ class Backtester:
             price_windows = self.prepare_price_windows(df)
 
             # Process each bar
-            for window in price_windows:
-                bar_idx = window["bar_index"]
-                current_time = window["time"]
-                high = window["high"][-1]
-                low = window["low"][-1]
-                close = window["close"][-1]
+            for window, bar_idx in self.prepare_price_windows(df):
+                current_time = window["time"].iloc[-1]
+                high = window["high"].iloc[-1]
+                low = window["low"].iloc[-1]
+                close = window["close"].iloc[-1]
 
                 # Check existing positions for exits
                 if symbol in self.open_positions:

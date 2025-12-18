@@ -1137,6 +1137,16 @@ class MetaTraderConfig:
                 "potential_gain_usd": round(potential_gain_usd, 2),
             }
 
+    def get_open_trades_count(self, symbol=None):
+        positions = MetaTrader5.positions_get()
+        if positions is None:
+            return 0
+
+        if symbol:
+            return sum(1 for p in positions if p.symbol == symbol)
+
+        return len(positions)
+
     def execute_trade(
         self,
         symbol,
