@@ -20,6 +20,7 @@ mt5_config.start_mt5(project_settings)
 MT5_TIMEFRAME_MAP = {
     MetaTrader5.TIMEFRAME_M1: "1 Min",
     MetaTrader5.TIMEFRAME_M5: "5 Min",
+    MetaTrader5.TIMEFRAME_M10: "10 Min",
     MetaTrader5.TIMEFRAME_M15: "15 Min",
     MetaTrader5.TIMEFRAME_M30: "30 Min",
     MetaTrader5.TIMEFRAME_H1: "1 Hour",
@@ -35,12 +36,12 @@ timeframe = MetaTrader5.TIMEFRAME_M15
 data_provider = MT5DataProvider(mt5_config)
 
 # 3. Fetch data
-symbols = ["USDJPYm","EURUSDm","GPBUSDm"]  # Example symbols
+symbols = ["USDJPYm","EURUSDm","GBPUSDm"]  # Example symbols
 data_dict = data_provider.fetch_multiple_symbols(
     symbols=symbols,
     timeframe=timeframe,
     start_date=datetime(2025, 1, 1),
-    end_date=datetime(2025, 12, 1),
+    end_date=datetime(2025, 12, 20),
 )
 
 
