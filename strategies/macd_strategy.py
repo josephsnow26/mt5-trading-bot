@@ -147,6 +147,7 @@ class MACDTrendStrategy:
             tp = entry_price - target_distance  # Below entry
 
         return sl, tp
+    
 
     def generate_signal(self, price_data: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -201,7 +202,7 @@ class MACDTrendStrategy:
                 "stop_loss": None,
                 "take_profit": None,
                 "trend": trend,
-                "position_size": 0.02,
+                "position_size": 0.01,
                 "macd_prev": float(macd_prev),
                 "macd_now": float(macd_now),
                 "macd_signal_prev": float(signal_prev),
@@ -216,7 +217,6 @@ class MACDTrendStrategy:
                 result["signal"] = "buy"
                 result["reason"] = "MACD bullish cross in uptrend"
                 sl, tp = self._calculate_stop_and_target(current_price, ema_200, "buy")
-                sl, tp = round(sl, 3), round(sl, 3)
                 result["stop_loss"] = sl
                 result["take_profit"] = tp
 

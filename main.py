@@ -38,6 +38,13 @@ else:
 project_settings = mt5_config
 
 
+def normalize_price(symbol, price):
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        raise RuntimeError(f"Symbol info not found for {symbol}")
+    return round(price, info.digits)
+
+
 def main():
     # ============================================================
     # 1. INITIALIZE MT5
@@ -94,7 +101,6 @@ def main():
     # 4. SCAN SYMBOLS FOR SIGNALS
     # ============================================================
 
-    
     TIMEFRAME_MINUTES = 15
     last_run_minute = None
     print("=" * 60)
@@ -153,7 +159,9 @@ def main():
                         print(f"   Take Profit: {signal_result['take_profit']:.5f}")
 
                         # Calculate risk
-                        risk = abs(signal_result["entry_price"] - signal_result["stop_loss"])
+                        risk = abs(
+                            signal_result["entry_price"] - signal_result["stop_loss"]
+                        )
                         reward = abs(
                             signal_result["take_profit"] - signal_result["entry_price"]
                         )
@@ -171,19 +179,25 @@ def main():
                                 f"({open_trades}/{MAX_OPEN_TRADES})"
                             )
                         else:
-                            print(f"   🚫 Trade count — open trades  " f"({open_trades})")
+                            print(
+                                f"   🚫 Trade count — open trades  " f"({open_trades})"
+                            )
 
                         # Execute trade (optional - uncomment to enable live trading)
                         execute = "y"
+                        # Get symbol info once
+                       
+                        sl = normalize_price(symbol, signal_result["stop_loss"])
+                        tp = normalize_price(symbol, signal_result["take_profit"])
                         if execute.lower() == "y":
                             success = mt5_config.execute_trade(
                                 symbol=symbol,
                                 signal=signal_result["signal"],
-                                stop_loss=signal_result["stop_loss"],
-                                take_profit=signal_result["take_profit"],
+                                stop_loss=sl,
+                                take_profit=tp,
                                 lot_size=signal_result[
                                     "position_size"
-                                ],  # Auto-calculate based on 1% risk
+                                ],  # ❌ DO NOT normalize
                                 strategy_name="MACD_Trend",
                             )
                             if success:
@@ -197,7 +211,6 @@ def main():
 
         # Check every second (cheap + accurate)
         # time.sleep(1)
-
 
     # print("=" * 60)
     # print("SCANNING FOR SIGNALS")
