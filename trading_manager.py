@@ -1,6 +1,6 @@
 import pandas as pd
 from datetime import datetime
-from macd_strategy import MACDTrendStrategy  # replace with actual import
+from strategies.macd_strategy import MACDTrendStrategy  # replace with actual import
 import MetaTrader5
 
 class TradeManager:

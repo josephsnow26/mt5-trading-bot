@@ -6,6 +6,8 @@ Clean, modular implementation with proper error handling and validation.
 import pandas as pd
 from typing import Dict, Optional, Any
 
+# 15 TF TIMEFRAME START WITH 10 DOLLARS   ABOVE 15 TF USE 100 DOLLARS
+
 
 class MACDTrendStrategy:
     """

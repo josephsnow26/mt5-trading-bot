@@ -15,7 +15,7 @@ Shows clean integration and proper error handling.
 
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-from macd_strategy import MACDTrendStrategy
+from strategies.macd_strategy import MACDTrendStrategy
 
 
 live = True

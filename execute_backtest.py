@@ -4,7 +4,8 @@ import MetaTrader5
 # Import your modules
 from meter_trader_config import MetaTraderConfig
 from reset import TradingSystem
-from macd_strategy import MACDTrendStrategy
+from strategies.macd_strategy import MACDTrendStrategy
+from strategies.ma_strategy import MATrendStrategy
 from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
 from main import project_settings
@@ -47,12 +48,14 @@ data_dict = data_provider.fetch_multiple_symbols(
 
 
 strategy = MACDTrendStrategy(risk_reward_ratio=3.0)
+# strategy = MATrendStrategy(risk_reward_ratio=3.0)
+
 
 # 5. Create trading system (optional - for risk management)
 correlation_groups = {"EURUSD": "USD", "GBPUSD": "USD", "USDJPY": "USD"}
 
 trading_system = TradingSystem(
-    balance=10,
+    balance=100,
     risk_per_trade=0.02,
     max_positions=5,
     max_daily_loss=0.05,
