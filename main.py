@@ -94,95 +94,199 @@ def main():
     # 4. SCAN SYMBOLS FOR SIGNALS
     # ============================================================
 
+    
+    TIMEFRAME_MINUTES = 15
+    last_run_minute = None
     print("=" * 60)
     print("SCANNING FOR SIGNALS")
     print("=" * 60)
     while True:
         now = datetime.now()
-        readable_time = now.strftime("%A, %d %B %Y — %I:%M:%S %p")
 
-        print("\n" + "=" * 60)
-        print(f"🕒 {readable_time}")
-        print("=" * 60)
-        for symbol in symbols:
-            print(f"\n📊 Analyzing {symbol}...")
+        # Check alignment (e.g. 15m candle close)
+        if now.minute % TIMEFRAME_MINUTES == 0:
+            # Prevent running multiple times in same minute
+            if last_run_minute != now.minute:
+                last_run_minute = now.minute
 
-            # Fetch historical data
-            data = mt5_config.get_market_data_date_range(
-                symbol=symbol,
-                timeframe=timeframe,
-                start_date=datetime.now() - timedelta(days=30),
-                end_date=datetime.now(),
-                # Enough for 200 EMA calculation
-            )
+                readable_time = now.strftime("%A, %d %B %Y — %I:%M:%S %p")
+                print("\n" + "=" * 60)
+                print(f"🕒 {readable_time}")
+                print("=" * 60)
 
-            # Check if data was fetched
-            if data.empty:
-                print(f"   ⚠️ No data available for {symbol}")
-                continue
+                for symbol in symbols:
+                    print(f"\n📊 Analyzing {symbol}...")
 
-            print(f"   ✅ Loaded {len(data)} bars")
-
-            # Generate signal
-            signal_result = strategy.generate_signal(data)
-
-            # Display results
-            print(f"\n   Trend: {signal_result['trend']}")
-            print(f"   Current Price: {signal_result['entry_price']:.5f}")
-            print(f"   EMA 200: {signal_result['ema_200']:.5f}")
-            print(f"   MACD: {signal_result['macd_now']:.5f}")
-            print(f"   Signal Line: {signal_result['macd_signal_now']:.5f}")
-            print(f"   Reason: {signal_result['reason']}")
-            print(f"   Position Size: {signal_result['position_size']}")
-
-            # Handle trading signal
-            if signal_result["signal"]:
-                print(f"\n   🎯 SIGNAL: {signal_result['signal'].upper()}")
-                print(f"   Entry: {signal_result['entry_price']:.5f}")
-                print(f"   Stop Loss: {signal_result['stop_loss']:.5f}")
-                print(f"   Take Profit: {signal_result['take_profit']:.5f}")
-
-                # Calculate risk
-                risk = abs(signal_result["entry_price"] - signal_result["stop_loss"])
-                reward = abs(
-                    signal_result["take_profit"] - signal_result["entry_price"]
-                )
-                print(
-                    f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward/risk:.1f}"
-                )
-
-                MAX_OPEN_TRADES = 3
-
-                open_trades = mt5_config.get_open_trades_count()
-
-                if open_trades >= MAX_OPEN_TRADES:
-                    print(
-                        f"   🚫 Trade skipped — open trades limit reached "
-                        f"({open_trades}/{MAX_OPEN_TRADES})"
-                    )
-                else:
-                    print(f"   🚫 Trade count — open trades  " f"({open_trades})")
-
-                # Execute trade (optional - uncomment to enable live trading)
-                execute = "y"
-                if execute.lower() == "y":
-                    success = mt5_config.execute_trade(
+                    # Fetch historical data
+                    data = mt5_config.get_market_data_date_range(
                         symbol=symbol,
-                        signal=signal_result["signal"],
-                        stop_loss=signal_result["stop_loss"],
-                        take_profit=signal_result["take_profit"],
-                        lot_size=signal_result[
-                            "position_size"
-                        ],  # Auto-calculate based on 1% risk
-                        strategy_name="MACD_Trend",
+                        timeframe=timeframe,
+                        start_date=datetime.now() - timedelta(days=30),
+                        end_date=datetime.now(),
+                        # Enough for 200 EMA calculation
                     )
-                    if success:
-                        print("   ✅ Trade executed successfully!")
+
+                    # Check if data was fetched
+                    if data.empty:
+                        print(f"   ⚠️ No data available for {symbol}")
+                        continue
+
+                    print(f"   ✅ Loaded {len(data)} bars")
+
+                    # Generate signal
+                    signal_result = strategy.generate_signal(data)
+
+                    # Display results
+                    print(f"\n   Trend: {signal_result['trend']}")
+                    print(f"   Current Price: {signal_result['entry_price']:.5f}")
+                    print(f"   EMA 200: {signal_result['ema_200']:.5f}")
+                    print(f"   MACD: {signal_result['macd_now']:.5f}")
+                    print(f"   Signal Line: {signal_result['macd_signal_now']:.5f}")
+                    print(f"   Reason: {signal_result['reason']}")
+                    print(f"   Position Size: {signal_result['position_size']}")
+
+                    # Handle trading signal
+                    if signal_result["signal"]:
+                        print(f"\n   🎯 SIGNAL: {signal_result['signal'].upper()}")
+                        print(f"   Entry: {signal_result['entry_price']:.5f}")
+                        print(f"   Stop Loss: {signal_result['stop_loss']:.5f}")
+                        print(f"   Take Profit: {signal_result['take_profit']:.5f}")
+
+                        # Calculate risk
+                        risk = abs(signal_result["entry_price"] - signal_result["stop_loss"])
+                        reward = abs(
+                            signal_result["take_profit"] - signal_result["entry_price"]
+                        )
+                        print(
+                            f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward/risk:.1f}"
+                        )
+
+                        MAX_OPEN_TRADES = 3
+
+                        open_trades = mt5_config.get_open_trades_count()
+
+                        if open_trades >= MAX_OPEN_TRADES:
+                            print(
+                                f"   🚫 Trade skipped — open trades limit reached "
+                                f"({open_trades}/{MAX_OPEN_TRADES})"
+                            )
+                        else:
+                            print(f"   🚫 Trade count — open trades  " f"({open_trades})")
+
+                        # Execute trade (optional - uncomment to enable live trading)
+                        execute = "y"
+                        if execute.lower() == "y":
+                            success = mt5_config.execute_trade(
+                                symbol=symbol,
+                                signal=signal_result["signal"],
+                                stop_loss=signal_result["stop_loss"],
+                                take_profit=signal_result["take_profit"],
+                                lot_size=signal_result[
+                                    "position_size"
+                                ],  # Auto-calculate based on 1% risk
+                                strategy_name="MACD_Trend",
+                            )
+                            if success:
+                                print("   ✅ Trade executed successfully!")
+                            else:
+                                print("   ❌ Trade execution failed")
                     else:
-                        print("   ❌ Trade execution failed")
-            else:
-                print(f"   ⏸️ No signal")
-        time.sleep(15 * 60)
+                        print(f"   ⏸️ No signal")
+
+                print("✅ Cycle complete")
+
+        # Check every second (cheap + accurate)
+        # time.sleep(1)
+
+
+    # print("=" * 60)
+    # print("SCANNING FOR SIGNALS")
+    # print("=" * 60)
+    # while True:
+    #     now = datetime.now()
+    #     readable_time = now.strftime("%A, %d %B %Y — %I:%M:%S %p")
+
+    #     print("\n" + "=" * 60)
+    #     print(f"🕒 {readable_time}")
+    #     print("=" * 60)
+    #     for symbol in symbols:
+    #         print(f"\n📊 Analyzing {symbol}...")
+
+    #         # Fetch historical data
+    #         data = mt5_config.get_market_data_date_range(
+    #             symbol=symbol,
+    #             timeframe=timeframe,
+    #             start_date=datetime.now() - timedelta(days=30),
+    #             end_date=datetime.now(),
+    #             # Enough for 200 EMA calculation
+    #         )
+
+    #         # Check if data was fetched
+    #         if data.empty:
+    #             print(f"   ⚠️ No data available for {symbol}")
+    #             continue
+
+    #         print(f"   ✅ Loaded {len(data)} bars")
+
+    #         # Generate signal
+    #         signal_result = strategy.generate_signal(data)
+
+    #         # Display results
+    #         print(f"\n   Trend: {signal_result['trend']}")
+    #         print(f"   Current Price: {signal_result['entry_price']:.5f}")
+    #         print(f"   EMA 200: {signal_result['ema_200']:.5f}")
+    #         print(f"   MACD: {signal_result['macd_now']:.5f}")
+    #         print(f"   Signal Line: {signal_result['macd_signal_now']:.5f}")
+    #         print(f"   Reason: {signal_result['reason']}")
+    #         print(f"   Position Size: {signal_result['position_size']}")
+
+    #         # Handle trading signal
+    #         if signal_result["signal"]:
+    #             print(f"\n   🎯 SIGNAL: {signal_result['signal'].upper()}")
+    #             print(f"   Entry: {signal_result['entry_price']:.5f}")
+    #             print(f"   Stop Loss: {signal_result['stop_loss']:.5f}")
+    #             print(f"   Take Profit: {signal_result['take_profit']:.5f}")
+
+    #             # Calculate risk
+    #             risk = abs(signal_result["entry_price"] - signal_result["stop_loss"])
+    #             reward = abs(
+    #                 signal_result["take_profit"] - signal_result["entry_price"]
+    #             )
+    #             print(
+    #                 f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward/risk:.1f}"
+    #             )
+
+    #             MAX_OPEN_TRADES = 3
+
+    #             open_trades = mt5_config.get_open_trades_count()
+
+    #             if open_trades >= MAX_OPEN_TRADES:
+    #                 print(
+    #                     f"   🚫 Trade skipped — open trades limit reached "
+    #                     f"({open_trades}/{MAX_OPEN_TRADES})"
+    #                 )
+    #             else:
+    #                 print(f"   🚫 Trade count — open trades  " f"({open_trades})")
+
+    #             # Execute trade (optional - uncomment to enable live trading)
+    #             execute = "y"
+    #             if execute.lower() == "y":
+    #                 success = mt5_config.execute_trade(
+    #                     symbol=symbol,
+    #                     signal=signal_result["signal"],
+    #                     stop_loss=signal_result["stop_loss"],
+    #                     take_profit=signal_result["take_profit"],
+    #                     lot_size=signal_result[
+    #                         "position_size"
+    #                     ],  # Auto-calculate based on 1% risk
+    #                     strategy_name="MACD_Trend",
+    #                 )
+    #                 if success:
+    #                     print("   ✅ Trade executed successfully!")
+    #                 else:
+    #                     print("   ❌ Trade execution failed")
+    #         else:
+    #             print(f"   ⏸️ No signal")
 
     # # ============================================================
     # # 5. RETRIEVE TRADE HISTORY (OPTIONAL)
