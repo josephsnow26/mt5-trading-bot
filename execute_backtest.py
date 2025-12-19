@@ -13,7 +13,6 @@ from main import project_settings
 
 # 1. Setup MT5
 mt5_config = MetaTraderConfig()
-print(project_settings)
 mt5_config.start_mt5(project_settings)
 
 
@@ -41,8 +40,8 @@ symbols = ["USDJPYm","EURUSDm","GBPUSDm"]  # Example symbols
 data_dict = data_provider.fetch_multiple_symbols(
     symbols=symbols,
     timeframe=timeframe,
-    start_date=datetime(2025, 1, 1),
-    end_date=datetime(2025, 12, 20),
+    start_date=datetime(2025, 12, 8),
+    end_date=datetime(2025, 12, 19),
 )
 
 
@@ -55,7 +54,7 @@ strategy = MACDTrendStrategy(risk_reward_ratio=3.0)
 correlation_groups = {"EURUSD": "USD", "GBPUSD": "USD", "USDJPY": "USD"}
 
 trading_system = TradingSystem(
-    balance=100,
+    balance=10,
     risk_per_trade=0.02,
     max_positions=5,
     max_daily_loss=0.05,
