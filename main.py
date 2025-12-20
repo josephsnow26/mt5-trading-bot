@@ -84,7 +84,7 @@ def main():
     # ============================================================
 
     strategy = MACDTrendStrategy(
-        ema_period=200, macd_fast=12, macd_slow=26, macd_signal=9, risk_reward_ratio=3.0
+        ema_period=200, macd_fast=12, macd_slow=26, macd_signal=9, risk_reward_ratio=2.5
     )
 
     print(f"\n{strategy}")

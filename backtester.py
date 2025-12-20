@@ -58,7 +58,7 @@ class Backtester:
     self, entry_price, stop_loss, risk_percent=2, max_lots=5.0
     ):
        
-       return 0.02
+       return 0.01
 
 
     def create_trade(self, symbol, signal_data, current_time, bar_index):

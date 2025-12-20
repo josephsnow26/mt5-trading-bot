@@ -6,6 +6,9 @@ from meter_trader_config import MetaTraderConfig
 from reset import TradingSystem
 from strategies.macd_strategy import MACDTrendStrategy
 from strategies.ma_strategy import MATrendStrategy
+from strategies.ma_pull_back_strategy import MATrendPullbackStrategy
+from strategies.bollinger_pro import BollingerReversionProStrategy
+from strategies.bolinger import BollingerReversionStrategy
 from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
 from main import project_settings
@@ -36,25 +39,28 @@ timeframe = MetaTrader5.TIMEFRAME_M15
 data_provider = MT5DataProvider(mt5_config)
 
 # 3. Fetch data
-symbols = ["USDJPYm","EURUSDm","GBPUSDm"]  # Example symbols
+symbols = ["USDJPYm","EURUSDm","GBPUSDm","GBPJPYm"]  # Example symbols
 data_dict = data_provider.fetch_multiple_symbols(
     symbols=symbols,
     timeframe=timeframe,
-    start_date=datetime(2025, 12, 8),
-    end_date=datetime(2025, 12, 19),
+    start_date=datetime(2022, 1, 1),
+    end_date=datetime(2022, 12, 19),
 )
 
 
 
-strategy = MACDTrendStrategy(risk_reward_ratio=3.0)
+# strategy = MACDTrendStrategy(risk_reward_ratio=4.0)
 # strategy = MATrendStrategy(risk_reward_ratio=3.0)
+# strategy = MATrendPullbackStrategy(risk_reward_ratio=3.0)
+strategy = BollingerReversionStrategy()
+strategy = BollingerReversionProStrategy
 
 
 # 5. Create trading system (optional - for risk management)
 correlation_groups = {"EURUSD": "USD", "GBPUSD": "USD", "USDJPY": "USD"}
 
 trading_system = TradingSystem(
-    balance=10,
+    balance=100,
     risk_per_trade=0.02,
     max_positions=5,
     max_daily_loss=0.05,
