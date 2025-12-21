@@ -55,11 +55,10 @@ class Backtester:
             yield window_df, i
 
     def calculate_position_size(
-    self, entry_price, stop_loss, risk_percent=2, max_lots=5.0
+        self, entry_price, stop_loss, risk_percent=2, max_lots=5.0
     ):
-       
-       return 0.01
 
+        return 0.02
 
     def create_trade(self, symbol, signal_data, current_time, bar_index):
         """
@@ -243,24 +242,18 @@ class Backtester:
         lot_size = risk_amount / (stop_distance / pip_value)
         return lot_size
 
-    def run(self, symbols, df_dict, start_date=None, end_date=None):
-        """
-        Run backtest on provided data
+    def run(
+        self,
+        symbols,
+        df_dict,
+        low_df_dict=None,
+        high_df_dict=None,
+        start_date=None,
+        end_date=None,
+    ):
+        import pytz
+        import pandas as pd
 
-        Parameters:
-        -----------
-        symbols : list
-            List of symbols to trade
-        df_dict : dict
-            Dictionary mapping symbol -> DataFrame with OHLC data
-        start_date : datetime, optional
-        end_date : datetime, optional
-
-        Returns:
-        --------
-        dict
-            Backtest results
-        """
         print(f"\n{'='*70}")
         print(f"🚀 STARTING BACKTEST")
         print(f"{'='*70}")
@@ -268,101 +261,125 @@ class Backtester:
         print(f"Symbols: {symbols}")
 
         # Initialize balance
-        if self.trading_system:
-            self.initial_balance = self.trading_system.initial_balance
-            self.current_balance = self.trading_system.balance
-        else:
-            self.initial_balance = 10000
-            self.current_balance = 10000
-
+        self.initial_balance = (
+            self.trading_system.initial_balance if self.trading_system else 10000
+        )
+        self.current_balance = (
+            self.trading_system.balance if self.trading_system else 10000
+        )
         print(f"Initial Balance: ${self.initial_balance:,.2f}")
         print(f"{'='*70}\n")
 
-        # Process each symbol
         for symbol in symbols:
-            if symbol not in df_dict:
-                print(f"⚠️ No data for {symbol}, skipping...")
+            # Determine which data to use
+            if low_df_dict and high_df_dict:
+                ltf_df_full = low_df_dict.get(symbol)
+                htf_df_full = high_df_dict.get(symbol)
+                if ltf_df_full is None or htf_df_full is None:
+                    print(f"⚠️ Missing LTF or HTF data for {symbol}, skipping...")
+                    continue
+                df_to_use = ltf_df_full
+            else:
+                df_to_use = df_dict.get(symbol)
+                ltf_df_full = None
+                htf_df_full = None
+                if df_to_use is None:
+                    print(f"⚠️ No data for {symbol}, skipping...")
+                    continue
+
+            # Filter by date
+            if start_date:
+                df_to_use = df_to_use[df_to_use["time"] >= start_date]
+            if end_date:
+                df_to_use = df_to_use[df_to_use["time"] <= end_date]
+
+            if df_to_use.empty:
+                print(f"⚠️ No data after filtering dates for {symbol}, skipping...")
                 continue
 
-            df = df_dict[symbol]
-            print(f"\n📊 Processing {symbol} ({len(df)} bars)...")
+            self.backtest_start = df_to_use["time"].iloc[0]
+            self.backtest_end = df_to_use["time"].iloc[-1]
 
-            # Filter by date if provided
-            if start_date:
-                df = df[df["time"] >= start_date]
-            if end_date:
-                df = df[df["time"] <= end_date]
-            self.backtest_start = df["time"].iloc[0]
-            self.backtest_end = df["time"].iloc[-1]
+            print(f"\n📊 Processing {symbol} ({len(df_to_use)} bars)...")
 
-            # Prepare price windows
-            price_windows = self.prepare_price_windows(df)
-
-            # Process each bar
-            for window, bar_idx in self.prepare_price_windows(df):
+            # Iterate over bars
+            for window, bar_idx in self.prepare_price_windows(df_to_use):
                 current_time = window["time"].iloc[-1]
                 high = window["high"].iloc[-1]
                 low = window["low"].iloc[-1]
                 close = window["close"].iloc[-1]
 
-                # Check existing positions for exits
+                # Determine minimum bars needed for all indicators
+                min_bars_needed = max(
+                    getattr(self.strategy, "ema_period", 200),
+                    getattr(self.strategy, "ltf_rsi_period", 14),
+                    getattr(self.strategy, "htf_rsi_period", 14),
+                    50,  # for MACD etc.
+                )
+
+                # Slice LTF and HTF up to current bar
+                if ltf_df_full is not None and htf_df_full is not None:
+                    ltf_window = ltf_df_full.iloc[
+                        max(0, bar_idx - min_bars_needed + 1) : bar_idx + 1
+                    ]
+                    htf_window = htf_df_full.iloc[
+                        max(0, bar_idx - min_bars_needed + 1) : bar_idx + 1
+                    ]
+                else:
+                    ltf_window = window
+                    htf_window = None
+
+                # Skip bars with insufficient data
+                if len(ltf_window) < min_bars_needed:
+                    continue
+
+                # Check open positions for exits
                 if symbol in self.open_positions:
                     trade = self.open_positions[symbol]
                     should_exit, exit_price, exit_reason = self.check_exit(
                         trade, high, low, close, bar_idx
                     )
-
                     if should_exit:
-                        # Close trade
                         trade["exit_time"] = current_time
                         trade["exit_price"] = exit_price
                         trade["exit_reason"] = exit_reason
                         trade["exit_bar_index"] = bar_idx
                         trade["bars_held"] = bar_idx - trade["entry_bar_index"]
-
-                        # Calculate P&L
                         trade = self.calculate_pnl(trade, exit_price)
-
-                        # Update balance
                         self.update_balance(trade["pnl"])
-
-                        # Record trade
                         self.trades.append(trade)
                         del self.open_positions[symbol]
-
-                        # Log result
                         emoji = "✅" if trade["pnl"] > 0 else "❌"
                         print(
                             f"{emoji} {symbol} | {exit_reason.upper()} | "
                             f"P&L: ${trade['pnl']:.2f} ({trade['pnl_r']:.2f}R) | "
-                            f"Balance: ${self.current_balance:,.2f} | position_size:{trade["position_size"]}"
+                            f"Balance: ${self.current_balance:,.2f} | position_size:{trade['position_size']}"
                         )
 
-                # Look for new entries if no position
+                # Look for new entries if no open position
                 if symbol not in self.open_positions:
-                    # Check risk limits
                     if not self.check_risk_limits(symbol):
                         continue
 
                     # Generate signal
-                    signal_data = self.strategy.generate_signal(window)
+                    signal_data = self.strategy.generate_signal(
+                        price_data = window
+                    )
+
+                    if not signal_data or signal_data.get("entry_date") is None:
+                        continue
 
                     trade_dt = pd.to_datetime(signal_data["entry_date"])
-
-                    # Convert to Nigerian time (Africa/Lagos)
                     nigerian_tz = pytz.timezone("Africa/Lagos")
                     trade_dt_nigeria = trade_dt.tz_localize(pytz.UTC).astimezone(
                         nigerian_tz
                     )
-
                     date_str = trade_dt_nigeria.strftime("%Y-%m-%d %H:%M:%S")
 
-                    if signal_data["signal"]:
-                        # Create trade
+                    if signal_data.get("signal"):
                         trade = self.create_trade(
                             symbol, signal_data, current_time, bar_idx
                         )
-
                         if trade:
                             self.open_positions[symbol] = trade
                             print(
@@ -381,20 +398,18 @@ class Backtester:
 
         # Close remaining positions
         for symbol, trade in list(self.open_positions.items()):
-            df = df_dict[symbol]
-            final_price = df["close"].iloc[-1]
-
-            trade["exit_time"] = df["time"].iloc[-1]
+            df_final = (
+                df_dict.get(symbol) if df_dict.get(symbol) is not None else ltf_df_full
+            )
+            final_price = df_final["close"].iloc[-1]
+            trade["exit_time"] = df_final["time"].iloc[-1]
             trade["exit_price"] = final_price
             trade["exit_reason"] = "backtest_end"
             trade = self.calculate_pnl(trade, final_price)
-
             self.update_balance(trade["pnl"])
             self.trades.append(trade)
 
         self.open_positions.clear()
-
-        # Generate results
         return self.generate_results()
 
     def generate_results(self):

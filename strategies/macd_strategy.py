@@ -47,7 +47,7 @@ class MACDTrendStrategy:
         self.risk_reward_ratio = risk_reward_ratio
 
         # Minimum bars needed for calculations
-        self.min_bars = max(ema_period, macd_slow + macd_signal) + 2
+        self.min_bars = max(ema_period, macd_slow + macd_signal)
 
     def _calculate_ema(self, prices: pd.Series, period: int) -> pd.Series:
         """Calculate Exponential Moving Average."""
@@ -128,26 +128,53 @@ class MACDTrendStrategy:
         """
         Calculate stop loss and take profit levels.
 
-        Args:
-            entry_price: Entry price
-            stop_price: Stop loss price (200 EMA)
-            signal_type: 'buy' or 'sell'
-
-        Returns:
-            (stop_loss, take_profit)
+        SL is HALF the distance to EMA
+        TP remains unchanged (based on full EMA distance × RR)
         """
-        stop_distance = abs(entry_price - stop_price)
-        target_distance = stop_distance * self.risk_reward_ratio
+
+        # Full distance to EMA
+        full_stop_distance = abs(entry_price - stop_price)
+
+        # Half SL distance
+        half_stop_distance = full_stop_distance 
+
+        # TP remains based on FULL distance
+        target_distance = full_stop_distance * self.risk_reward_ratio
 
         if signal_type == "buy":
-            sl = stop_price  # Below entry
-            tp = entry_price + target_distance  # Above entry
+            sl = entry_price - half_stop_distance
+            tp = entry_price + target_distance
         else:  # sell
-            sl = stop_price  # Above entry
-            tp = entry_price - target_distance  # Below entry
+            sl = entry_price + half_stop_distance
+            tp = entry_price - target_distance
 
         return sl, tp
-    
+
+    # def _calculate_stop_and_target(
+    #     self, entry_price: float, stop_price: float, signal_type: str
+    # ) -> tuple[float, float]:
+    #     """
+    #     Calculate stop loss and take profit levels.
+
+    #     Args:
+    #         entry_price: Entry price
+    #         stop_price: Stop loss price (200 EMA)
+    #         signal_type: 'buy' or 'sell'
+
+    #     Returns:
+    #         (stop_loss, take_profit)
+    #     """
+    #     stop_distance = abs(entry_price - stop_price)
+    #     target_distance = stop_distance * self.risk_reward_ratio
+
+    #     if signal_type == "buy":
+    #         sl = stop_price  # Below entry
+    #         tp = entry_price + target_distance  # Above entry
+    #     else:  # sell
+    #         sl = stop_price  # Above entry
+    #         tp = entry_price - target_distance  # Below entry
+
+    #     return sl, tp
 
     def generate_signal(self, price_data: pd.DataFrame) -> Dict[str, Any]:
         """
@@ -202,7 +229,7 @@ class MACDTrendStrategy:
                 "stop_loss": None,
                 "take_profit": None,
                 "trend": trend,
-                "position_size": 0.01,
+                "position_size": 0.02,
                 "macd_prev": float(macd_prev),
                 "macd_now": float(macd_now),
                 "macd_signal_prev": float(signal_prev),

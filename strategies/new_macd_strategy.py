@@ -3152,6 +3152,7 @@ class StructureBasedStrategy:
 import pandas as pd
 import numpy as np
 
+
 class AdaptiveTrendMomentumStrategy:
     """
     Trend-following strategy with volatility-based risk control
@@ -3167,7 +3168,7 @@ class AdaptiveTrendMomentumStrategy:
         rsi_period=14,
         atr_period=14,
         risk_reward=4.0,
-        atr_multiplier=1.2
+        atr_multiplier=1.2,
     ):
         self.ema_fast = ema_fast
         self.ema_slow = ema_slow
@@ -3244,11 +3245,333 @@ class AdaptiveTrendMomentumStrategy:
             sl = entry + (latest["atr"] * self.atr_multiplier)
             tp = entry - (latest["atr"] * self.risk_reward)
 
-        return pd.DataFrame([{
-            "time": latest["time"],
-            "signal": signal,
-            "entry_price": entry,
-            "stop_loss": sl,
-            "take_profit": tp,
-            "position_size": 0.02
-        }])
+        return pd.DataFrame(
+            [
+                {
+                    "time": latest["time"],
+                    "signal": signal,
+                    "entry_price": entry,
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "position_size": 0.02,
+                }
+            ]
+        )
+
+
+import pandas as pd
+from typing import Dict, Any, Optional
+
+
+import pandas as pd
+from typing import Dict, Any, Optional
+
+
+class RegimeAdaptiveMomentumStrategy:
+    """
+    Regime-Adaptive Momentum Breakout Strategy
+    Designed for small accounts (30–100$)
+    """
+
+    def __init__(
+        self,
+        ema_fast: int = 50,
+        ema_slow: int = 200,
+        rsi_period: int = 14,
+        atr_period: int = 14,
+        adx_period: int = 14,
+        risk_reward_ratio: float = 2.5,
+    ):
+        self.ema_fast = ema_fast
+        self.ema_slow = ema_slow
+        self.rsi_period = rsi_period
+        self.atr_period = atr_period
+        self.adx_period = adx_period
+        self.risk_reward_ratio = risk_reward_ratio
+
+        self.min_bars = max(ema_slow, rsi_period, atr_period, adx_period) + 5
+
+    # ---------------- INDICATORS ----------------
+
+    def _ema(self, s: pd.Series, p: int):
+        return s.ewm(span=p, adjust=False).mean()
+
+    def _rsi(self, s: pd.Series):
+        delta = s.diff()
+        gain = delta.clip(lower=0).rolling(self.rsi_period).mean()
+        loss = -delta.clip(upper=0).rolling(self.rsi_period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
+
+    def _atr(self, df: pd.DataFrame):
+        high, low, close = df["high"], df["low"], df["close"]
+        tr = pd.concat(
+            [
+                high - low,
+                (high - close.shift()).abs(),
+                (low - close.shift()).abs(),
+            ],
+            axis=1,
+        ).max(axis=1)
+        return tr.rolling(self.atr_period).mean()
+
+    def _adx(self, df: pd.DataFrame):
+        high, low, close = df["high"], df["low"], df["close"]
+
+        plus_dm = high.diff()
+        minus_dm = low.diff().abs()
+
+        tr = self._atr(df)
+
+        plus_di = 100 * (plus_dm.rolling(self.adx_period).mean() / tr)
+        minus_di = 100 * (minus_dm.rolling(self.adx_period).mean() / tr)
+
+        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+        return dx.rolling(self.adx_period).mean()
+
+    # ---------------- SIGNAL ----------------
+
+    def generate_signal(self, df: pd.DataFrame) -> Dict[str, Any]:
+        if df is None or len(df) < self.min_bars:
+            return {"signal": None, "reason": "Insufficient data"}
+
+        close = df["close"]
+        high = df["high"]
+        low = df["low"]
+
+        ema50 = self._ema(close, self.ema_fast)
+        ema200 = self._ema(close, self.ema_slow)
+        rsi = self._rsi(close)
+        atr = self._atr(df)
+        adx = self._adx(df)
+
+        i = -1
+        price = close.iloc[i]
+
+        result = {
+            "signal": None,
+            "entry_price": price,
+            "stop_loss": None,
+            "take_profit": None,
+            "position_size": 0.01,
+            "entry_date": df["time"].iloc[i],
+            "reason": None,
+        }
+
+        # ----------- BUY CONDITIONS -----------
+        if (
+            ema50.iloc[i] > ema200.iloc[i]
+            and price > ema50.iloc[i]
+            and adx.iloc[i] > 22
+            and 55 < rsi.iloc[i] < 70
+            and high.iloc[i] > high.iloc[i - 1]
+        ):
+            sl = min(
+                ema50.iloc[i],
+                price - (atr.iloc[i] * 1.2),
+            )
+            risk = abs(price - sl)
+            tp = price + (risk * self.risk_reward_ratio)
+
+            result.update(
+                {
+                    "signal": "buy",
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "reason": "Trend + momentum breakout",
+                }
+            )
+            return result
+
+        # ----------- SELL CONDITIONS -----------
+        if (
+            ema50.iloc[i] < ema200.iloc[i]
+            and price < ema50.iloc[i]
+            and adx.iloc[i] > 22
+            and 30 < rsi.iloc[i] < 45
+            and low.iloc[i] < low.iloc[i - 1]
+        ):
+            sl = max(
+                ema50.iloc[i],
+                price + (atr.iloc[i] * 1.2),
+            )
+            risk = abs(price - sl)
+            tp = price - (risk * self.risk_reward_ratio)
+
+            result.update(
+                {
+                    "signal": "sell",
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "reason": "Downtrend momentum breakdown",
+                }
+            )
+            return result
+
+        result["reason"] = "Conditions not met"
+        return result
+
+    def __repr__(self):
+        return "RegimeAdaptiveMomentumStrategy(small-account optimized)"
+
+
+import pandas as pd
+from typing import Dict, Any
+
+
+
+class HTF_LTF_RSI_Strategy:
+    """
+    Higher-TF Bias + Lower-TF RSI Strategy
+    Generates signals on lower TF in the direction of higher TF bias.
+    """
+
+    def __init__(
+        self,
+        ltf_rsi_period: int = 14,
+        htf_rsi_period: int = 14,
+        rsi_overbought: float = 70,
+        rsi_oversold: float = 30,
+        risk_reward_ratio: float = 2.0,
+        position_size: float = 0.01,
+        htf_ema_period=200,  # <-- Add this
+    ):
+        self.ltf_rsi_period = ltf_rsi_period
+        self.htf_rsi_period = htf_rsi_period
+        self.rsi_overbought = rsi_overbought
+        self.rsi_oversold = rsi_oversold
+        self.risk_reward_ratio = risk_reward_ratio
+        self.htf_ema_period = htf_ema_period  # <-- Assign it
+
+        self.position_size = position_size
+        self.min_bars = max(ltf_rsi_period, htf_rsi_period) + 5
+
+    def _rsi(self, prices: pd.Series, period: int) -> pd.Series:
+        delta = prices.diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(period).mean()
+        avg_loss = loss.rolling(period).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+
+    def _validate_data(
+        self, ltf_df: pd.DataFrame, htf_df: pd.DataFrame
+    ) -> tuple[bool, str]:
+        if ltf_df is None or ltf_df.empty:
+            return False, "LTF data empty"
+        if htf_df is None or htf_df.empty:
+            return False, "HTF data empty"
+        if len(ltf_df) < self.min_bars or len(htf_df) < self.min_bars:
+            return False, f"Insufficient bars (LTF: {len(ltf_df)}, HTF: {len(htf_df)})"
+        return True, ""
+
+    def _empty_signal(self, reason: str, ltf_df: pd.DataFrame = None):
+        return {
+            "signal": None,
+            "entry_price": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "position_size": 0.0,
+            "entry_date": (
+                ltf_df["time"].iloc[-1]
+                if ltf_df is not None and not ltf_df.empty
+                else None
+            ),
+            "reason": reason,
+        }
+
+    def generate_signal(
+        self,
+        ltf_df: pd.DataFrame,
+        htf_df: pd.DataFrame = None,
+        current_time: pd.Timestamp = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate buy/sell signals based on HTF bias and LTF EMA+RSI.
+        SL = LTF EMA, TP = SL distance * risk_reward_ratio.
+        """
+
+        # Validate
+        is_valid, err = self._validate_data(ltf_df, htf_df)
+        if not is_valid:
+            return self._empty_signal(err, ltf_df)
+
+        try:
+            current_price = ltf_df["close"].iloc[-1]
+
+            # HTF EMA and bias
+            if htf_df is not None:
+                htf_ema = (
+                    htf_df["close"]
+                    .ewm(span=self.htf_ema_period, adjust=False)
+                    .mean()
+                    .iloc[-1]
+                )
+                htf_price = htf_df["close"].iloc[-1]
+                htf_bias = "bullish" if htf_price > htf_ema else "bearish"
+            else:
+                return self._empty_signal("HTF data required", ltf_df)
+
+            # LTF EMA and RSI
+            ltf_ema = (
+                ltf_df["close"]
+                .ewm(span=self.htf_ema_period, adjust=False)
+                .mean()
+                .iloc[-1]
+            )
+            ltf_rsi = self._rsi(ltf_df["close"], self.ltf_rsi_period).iloc[-1]
+
+            # Check buy conditions
+            if (
+                htf_bias == "bullish"
+                and current_price > ltf_ema
+                and ltf_rsi < self.rsi_oversold
+            ):
+                signal = "buy"
+                stop_loss = ltf_ema
+                take_profit = (
+                    current_price + (current_price - stop_loss) * self.risk_reward_ratio
+                )
+            else:
+                return self._empty_signal("No entry conditions met", ltf_df)
+
+            return {
+                "signal": signal,
+                "entry_price": current_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "position_size": self.position_size,
+                "entry_date": (
+                    current_time
+                    if current_time is not None
+                    else ltf_df["time"].iloc[-1]
+                ),
+                "htf_bias": htf_bias,
+                "ltf_rsi": ltf_rsi,
+                "ltf_ema": ltf_ema,
+                "htf_ema": htf_ema,
+                "reason": f"{signal.upper()} triggered by LTF RSI < {self.rsi_oversold} in direction of HTF EMA bias",
+            }
+
+        except Exception as e:
+            return self._empty_signal(f"Error generating signal: {str(e)}", ltf_df)
+
+    def get_parameters(self) -> Dict[str, Any]:
+        return {
+            "name": "HTF_LTF_RSI_Strategy",
+            "ltf_rsi_period": self.ltf_rsi_period,
+            "htf_rsi_period": self.htf_rsi_period,
+            "rsi_overbought": self.rsi_overbought,
+            "rsi_oversold": self.rsi_oversold,
+            "risk_reward_ratio": self.risk_reward_ratio,
+            "position_size": self.position_size,
+            "min_bars": self.min_bars,
+        }
+
+    def __repr__(self):
+        return (
+            f"HTF_LTF_RSI_Strategy(LTF={self.ltf_rsi_period}, HTF={self.htf_rsi_period}, "
+            f"RR={self.risk_reward_ratio})"
+        )

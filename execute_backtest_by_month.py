@@ -20,8 +20,6 @@ from strategies.new_macd_strategy import (
     RSI2MeanReversion,
     StochasticBounceScalper,
     StructureBasedStrategy,
-    RegimeAdaptiveMomentumStrategy,
-    HTF_LTF_RSI_Strategy,
 )
 from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
@@ -32,6 +30,15 @@ import pandas as pd
 # 1. Setup MT5
 mt5_config = MetaTraderConfig()
 mt5_config.start_mt5(project_settings)
+
+
+symbols = [
+    "USDJPYm",  # USD/JPY micro
+    "EURUSDm",  # EUR/USD micro
+    "GBPUSDm",  # GBP/USD micro
+    "GBPJPYm",  # GBP/JPY micro
+]
+data_provider = MT5DataProvider(mt5_config)
 
 # MT5 timeframe mapping
 MT5_TIMEFRAME_MAP = {
@@ -48,116 +55,126 @@ MT5_TIMEFRAME_MAP = {
 }
 
 timeframe = MetaTrader5.TIMEFRAME_M15
-# higher_tf = MetaTrader5.TIMEFRAME_M30
 
 
-def backtest_by_year_df(
-    strategies_df, symbols, start_year, end_year, initial_balance=40
+
+def backtest_by_month_df(
+    strategies_df, symbols, year, initial_balance=1000
 ):
     """
-    Run backtests for multiple strategies year by year using a DataFrame to hold strategies.
+    Run backtests month-by-month for a single year.
 
     Parameters
     ----------
     strategies_df : pd.DataFrame
-        DataFrame with columns ["strategy_name", "strategy_instance"]
+        Columns: ["strategy_name", "strategy_instance"]
     symbols : list
-        List of symbols to trade
-    start_year : int
-        Start year (inclusive)
-    end_year : int
-        End year (inclusive)
+        Symbols to backtest
+    year : int
+        Year to backtest (e.g. 2024)
     initial_balance : float
-        Starting balance for each year
+        Starting balance per month
 
     Returns
     -------
     pd.DataFrame
-        Aggregated yearly results for all strategies
+        Monthly backtest results
     """
     results_list = []
 
-    for year in range(start_year, end_year + 1):
-        year_start = datetime(year, 1, 1)
-        year_end = datetime(year, 12, 31, 23, 59, 59)
+    for month in range(1, 13):
+        month_start = datetime(year, month, 1)
+        if month == 12:
+            month_end = datetime(year, 12, 31, 23, 59, 59)
+        else:
+            month_end = datetime(year, month + 1, 1) - pd.Timedelta(seconds=1)
 
-        # Fetch data for the year
+        print(
+            f"\n{'='*50}\n📅 BACKTESTING: {year}-{month:02d}\n{'='*50}\n"
+        )
+
+        # Fetch monthly data
         df_dict = data_provider.fetch_multiple_symbols(
             symbols=symbols,
             timeframe=timeframe,
-            start_date=year_start,
-            end_date=year_end,
+            start_date=month_start,
+            end_date=month_end,
         )
 
-        print(f"\n{'='*50}\n📅 BACKTESTING YEAR: {year}\n{'='*50}\n")
-
-        for idx, row in strategies_df.iterrows():
+        for _, row in strategies_df.iterrows():
             strategy_name = row["strategy_name"]
             strategy_instance = row["strategy_instance"]
 
-            # Reset trading system for each strategy/year
             trading_system = TradingSystem(
                 balance=initial_balance,
                 risk_per_trade=0.02,
                 max_positions=5,
                 max_daily_loss=0.05,
                 max_drawdown=0.15,
-                correlation_groups={"EURUSD": "USD", "GBPUSD": "USD", "USDJPY": "USD"},
+                correlation_groups={
+                    "EURUSD": "USD",
+                    "GBPUSD": "USD",
+                    "USDJPY": "USD",
+                },
             )
 
             backtester = Backtester(
                 strategy=strategy_instance,
                 trading_system=trading_system,
-                timeframe="1H",  # adjust as needed
+                timeframe="1H",
             )
 
-            # Filter out symbols with no data
+            # Remove symbols without data
             filtered_df_dict = {
                 sym: df
                 for sym, df in df_dict.items()
                 if df is not None and not df.empty
             }
+
             if not filtered_df_dict:
                 print(
-                    f"⚠️ No data available for any symbol in {year}, skipping strategy {strategy_name}"
+                    f"⚠️ No data for {year}-{month:02d}, skipping {strategy_name}"
                 )
                 continue
 
-            # Run backtest
             results = backtester.run(
                 symbols=list(filtered_df_dict.keys()),
                 df_dict=filtered_df_dict,
-                start_date=year_start,
-                end_date=year_end,
+                start_date=month_start,
+                end_date=month_end,
             )
 
-            if results:
-                equity_df = results["equity_curve_df"]
+            if not results:
+                continue
 
-                lowest_balance = equity_df["balance"].min()
-                lowest_balance_pct = (
-                    (lowest_balance - initial_balance) / initial_balance
-                ) * 100
+            equity_df = results["equity_curve_df"]
+            lowest_balance = equity_df["balance"].min()
 
-                results_list.append(
-                    {
-                        "year": year,
-                        "strategy": strategy_name,
-                        "total_trades": results["total_trades"],
-                        "winning_trades": results["winning_trades"],
-                        "losing_trades": results["losing_trades"],
-                        "win_rate": results["win_rate"],
-                        "net_pnl": results["net_pnl"],
-                        "return_pct": results["return_pct"],
-                        "lowest_balance_pct": lowest_balance_pct,
-                        "lowest_balance": lowest_balance,
-                        "max_drawdown_pct": results["max_drawdown_pct"],
-                        "final_balance": results["final_balance"],
-                        "max_drawdown_pct": results["max_drawdown_pct"],
-                    }
-                )
+            results_list.append(
+                {
+                    "year": year,
+                    "month": month,
+                    "month_name": month_start.strftime("%B"),
+                    "strategy": strategy_name,
+                    "total_trades": results["total_trades"],
+                    "winning_trades": results["winning_trades"],
+                    "losing_trades": results["losing_trades"],
+                    "win_rate": results["win_rate"],
+                    "net_pnl": results["net_pnl"],
+                    "return_pct": results["return_pct"],
+                    "lowest_balance": lowest_balance,
+                    "lowest_balance_pct": (
+                        (lowest_balance - initial_balance)
+                        / initial_balance
+                    )
+                    * 100,
+                    "max_drawdown_pct": results["max_drawdown_pct"],
+                    "final_balance": results["final_balance"],
+                }
+            )
 
     return pd.DataFrame(results_list)
+
 
 
 # ------------------------
@@ -168,26 +185,22 @@ strategies_df = pd.DataFrame(
         "strategy_name": [
             # "MA Trend",
             # "MA Pullback",
-            "MAC D",
+            # "MAC D",
             # "Trend Pullback"
             # "Bollinger"
             # "schocasticbouncer"
-            # "adaptive",
-            # "regime_adaptive"
-            # "high_tf"
+            "adaptive"
         ],
         "strategy_instance": [
             # MATrendStrategy(risk_reward_ratio=3.0),
             # MATrendPullbackStrategy(risk_reward_ratio=3.0),
-            MACDTrendStrategy(risk_reward_ratio=2.5),
+            # MACDTrendStrategy(risk_reward_ratio=2.0),
             # TrendPullbackVolatilityStrategy(risk_reward_ratio=3.0)
             # BollingerReversionStrategy()
             # MicroAccountScalper(risk_reward_ratio=3.0)
             # StochasticBounceScalper(risk_reward_ratio=3.0)
             # StructureBasedStrategy()
-            # AdaptiveTrendMomentumStrategy()
-            # RegimeAdaptiveMomentumStrategy()
-            # HTF_LTF_RSI_Strategy(risk_reward_ratio=3.0)
+            AdaptiveTrendMomentumStrategy()
         ],
     }
 )
@@ -200,11 +213,27 @@ symbols = [
 ]
 data_provider = MT5DataProvider(mt5_config)
 
+# MT5 timeframe mapping
+MT5_TIMEFRAME_MAP = {
+    MetaTrader5.TIMEFRAME_M1: "1 Min",
+    MetaTrader5.TIMEFRAME_M5: "5 Min",
+    MetaTrader5.TIMEFRAME_M10: "10 Min",
+    MetaTrader5.TIMEFRAME_M15: "15 Min",
+    MetaTrader5.TIMEFRAME_M30: "30 Min",
+    MetaTrader5.TIMEFRAME_H1: "1 Hour",
+    MetaTrader5.TIMEFRAME_H4: "4 Hour",
+    MetaTrader5.TIMEFRAME_D1: "1 Day",
+    MetaTrader5.TIMEFRAME_W1: "1 Week",
+    MetaTrader5.TIMEFRAME_MN1: "1 Month",
+}
 
-yearly_results = backtest_by_year_df(
-    strategies_df, symbols, start_year=2022, end_year=2025
+timeframe = MetaTrader5.TIMEFRAME_M15
+
+year = 2024
+yearly_results = backtest_by_month_df(
+    strategies_df, symbols, year=year
 )
 
 # Export results
-yearly_results.to_csv("yearly_strategy_comparison.csv", index=False)
+yearly_results.to_csv(f"monthly_strategy_comparison_{year}_adaptive.csv", index=False)
 print(yearly_results)
