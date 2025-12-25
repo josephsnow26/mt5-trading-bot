@@ -4,25 +4,7 @@ import MetaTrader5
 # Import your modules
 from meter_trader_config import MetaTraderConfig
 from reset import TradingSystem
-from strategies.macd_strategy import MACDTrendStrategy
-from strategies.ma_strategy import MATrendStrategy
-from strategies.ma_pull_back_strategy import MATrendPullbackStrategy
-from strategies.bollinger_pro import BollingerReversionProStrategy
-from strategies.bolinger import BollingerReversionStrategy
-from strategies.macd_trend_pull_back import TrendPullbackVolatilityStrategy
-from strategies.adaptive_trend_momemtum import AdaptiveTrendMomentumStrategy
-from strategies.new_macd_strategy import (
-    EMARibbonRSIStrategy,
-    ImprovedMACDTrendStrategy,
-    AggressiveScalpStrategy,
-    SupportResistanceBouncer,
-    MicroAccountScalper,
-    RSI2MeanReversion,
-    StochasticBounceScalper,
-    StructureBasedStrategy,
-    RegimeAdaptiveMomentumStrategy,
-    HTF_LTF_RSI_Strategy,
-)
+from strategies.macd_strategy import MACDTrendStrategy, RestrictiveVolumeStrategy
 from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
 from main import project_settings
@@ -52,7 +34,7 @@ timeframe = MetaTrader5.TIMEFRAME_M15
 
 
 def backtest_by_year_df(
-    strategies_df, symbols, start_year, end_year, initial_balance=40
+    strategies_df, symbols, start_year, end_year, initial_balance=100
 ):
     """
     Run backtests for multiple strategies year by year using a DataFrame to hold strategies.
@@ -166,43 +148,34 @@ def backtest_by_year_df(
 strategies_df = pd.DataFrame(
     {
         "strategy_name": [
-            # "MA Trend",
-            # "MA Pullback",
-            "MAC D",
-            # "Trend Pullback"
-            # "Bollinger"
-            # "schocasticbouncer"
-            # "adaptive",
-            # "regime_adaptive"
-            # "high_tf"
-        ],
+            # "MacdTrendStrategy", 
+            "RestrictiveVolumeStrategy"
+            ],
         "strategy_instance": [
-            # MATrendStrategy(risk_reward_ratio=3.0),
-            # MATrendPullbackStrategy(risk_reward_ratio=3.0),
-            MACDTrendStrategy(risk_reward_ratio=2.5),
-            # TrendPullbackVolatilityStrategy(risk_reward_ratio=3.0)
-            # BollingerReversionStrategy()
-            # MicroAccountScalper(risk_reward_ratio=3.0)
-            # StochasticBounceScalper(risk_reward_ratio=3.0)
-            # StructureBasedStrategy()
-            # AdaptiveTrendMomentumStrategy()
-            # RegimeAdaptiveMomentumStrategy()
-            # HTF_LTF_RSI_Strategy(risk_reward_ratio=3.0)
+            # MACDTrendStrategy(risk_reward_ratio=2.5),
+            RestrictiveVolumeStrategy(
+                favorite_hours=[8, 9, 10, 13, 14],  # London/NY open
+                favorite_weekdays=[1, 2, 3],  # Tue-Fri only
+                volume_spike_multiplier=2.0,  # 2x volume required
+                sl_method="atr",
+                tp_method="atr",
+                sl_atr_multiplier=2.0,
+                tp_atr_multiplier=4.0,
+            ),
         ],
     }
 )
 
 symbols = [
-    "USDJPYm",  # USD/JPY micro
     "EURUSDm",  # EUR/USD micro
-    "GBPUSDm",  # GBP/USD micro
-    "GBPJPYm",  # GBP/JPY micro
+    # "GBPUSDm",  # GBP/USD micro
+    "USDJPYm",  # USD/JPY micro
 ]
 data_provider = MT5DataProvider(mt5_config)
 
 
 yearly_results = backtest_by_year_df(
-    strategies_df, symbols, start_year=2022, end_year=2025
+    strategies_df, symbols, start_year=2021, end_year=2025
 )
 
 # Export results

@@ -356,7 +356,7 @@ class MetaTraderConfig:
         """
         # Check for open positions
         open_positions = mt5.positions_get(symbol=symbol)
-        if open_positions and len(open_positions) > 0:
+        if open_positions and len(open_positions) > 10:
             print(f"⚠️ {symbol} already has an open position — skipping")
             return False
 
@@ -376,14 +376,14 @@ class MetaTraderConfig:
                     last_close_dt = datetime.fromtimestamp(
                         last_close_time, tz=timezone.utc
                     )
-                    time_diff = now - last_close_dt
+                    # time_diff = now - last_close_dt
 
-                    if time_diff < timedelta(minutes=cooldown_minutes):
-                        mins_elapsed = int(time_diff.total_seconds() // 60)
-                        print(
-                            f"⏳ {symbol} closed {mins_elapsed} min ago — cooling down"
-                        )
-                        return False
+                    # if time_diff < timedelta(minutes=cooldown_minutes):
+                    #     mins_elapsed = int(time_diff.total_seconds() // 60)
+                    #     print(
+                    #         f"⏳ {symbol} closed {mins_elapsed} min ago — cooling down"
+                    #     )
+                    #     return False
 
         print(f"✅ {symbol} is available for trading")
         return True

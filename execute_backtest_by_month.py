@@ -5,22 +5,7 @@ import MetaTrader5
 from meter_trader_config import MetaTraderConfig
 from reset import TradingSystem
 from strategies.macd_strategy import MACDTrendStrategy
-from strategies.ma_strategy import MATrendStrategy
-from strategies.ma_pull_back_strategy import MATrendPullbackStrategy
-from strategies.bollinger_pro import BollingerReversionProStrategy
-from strategies.bolinger import BollingerReversionStrategy
-from strategies.macd_trend_pull_back import TrendPullbackVolatilityStrategy
-from strategies.adaptive_trend_momemtum import AdaptiveTrendMomentumStrategy
-from strategies.new_macd_strategy import (
-    EMARibbonRSIStrategy,
-    ImprovedMACDTrendStrategy,
-    AggressiveScalpStrategy,
-    SupportResistanceBouncer,
-    MicroAccountScalper,
-    RSI2MeanReversion,
-    StochasticBounceScalper,
-    StructureBasedStrategy,
-)
+
 from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
 from main import project_settings
@@ -183,24 +168,10 @@ def backtest_by_month_df(
 strategies_df = pd.DataFrame(
     {
         "strategy_name": [
-            # "MA Trend",
-            # "MA Pullback",
-            # "MAC D",
-            # "Trend Pullback"
-            # "Bollinger"
-            # "schocasticbouncer"
-            "adaptive"
+           
         ],
         "strategy_instance": [
-            # MATrendStrategy(risk_reward_ratio=3.0),
-            # MATrendPullbackStrategy(risk_reward_ratio=3.0),
-            # MACDTrendStrategy(risk_reward_ratio=2.0),
-            # TrendPullbackVolatilityStrategy(risk_reward_ratio=3.0)
-            # BollingerReversionStrategy()
-            # MicroAccountScalper(risk_reward_ratio=3.0)
-            # StochasticBounceScalper(risk_reward_ratio=3.0)
-            # StructureBasedStrategy()
-            AdaptiveTrendMomentumStrategy()
+           
         ],
     }
 )

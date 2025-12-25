@@ -5,10 +5,6 @@ import MetaTrader5
 from meter_trader_config import MetaTraderConfig
 from reset import TradingSystem
 from strategies.macd_strategy import MACDTrendStrategy
-from strategies.ma_strategy import MATrendStrategy
-from strategies.ma_pull_back_strategy import MATrendPullbackStrategy
-from strategies.bollinger_pro import BollingerReversionProStrategy
-from strategies.bolinger import BollingerReversionStrategy
 from mt5_data_provider import MT5DataProvider
 from backtester import Backtester
 from main import project_settings
@@ -49,11 +45,8 @@ data_dict = data_provider.fetch_multiple_symbols(
 
 
 
-# strategy = MACDTrendStrategy(risk_reward_ratio=4.0)
-# strategy = MATrendStrategy(risk_reward_ratio=3.0)
-# strategy = MATrendPullbackStrategy(risk_reward_ratio=3.0)
-strategy = BollingerReversionStrategy()
-strategy = BollingerReversionProStrategy
+strategy = MACDTrendStrategy(risk_reward_ratio=2.5)
+
 
 
 # 5. Create trading system (optional - for risk management)
