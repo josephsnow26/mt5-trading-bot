@@ -44,178 +44,144 @@ def normalize_price(symbol, price):
         raise RuntimeError(f"Symbol info not found for {symbol}")
     return round(price, info.digits)
 
-
 def main():
+    from decouple import config
+    from datetime import datetime, timedelta
+
     # ============================================================
     # 1. INITIALIZE MT5
     # ============================================================
-
-    from decouple import config
-
     mt5_config = MetaTraderConfig()
+    LIVE_MODE = True
 
-    # Toggle between live and demo accounts
-    live = True
-
-    if live:
-        mt5_settings = {
-            "username": config("MT5_USERNAME"),
-            "password": config("MT5_PASSWORD"),
-            "server": config("MT5_SERVER"),
-            "mt5_pathway": config("MT5_PATHWAY"),
-        }
-    else:
-        mt5_settings = {
-            "username": config("MT5_USERNAME_TRIAL"),
-            "password": config("MT5_PASSWORD_TRIAL"),
-            "server": config("MT5_SERVER_TRIAL"),
+    def load_mt5_settings(live: bool) -> dict:
+        return {
+            "username": config("MT5_USERNAME" if live else "MT5_USERNAME_TRIAL"),
+            "password": config("MT5_PASSWORD" if live else "MT5_PASSWORD_TRIAL"),
+            "server": config("MT5_SERVER" if live else "MT5_SERVER_TRIAL"),
             "mt5_pathway": config("MT5_PATHWAY"),
         }
 
-    print(f"🎯 Trading Mode: {'LIVE' if live else 'DEMO'}")
-    print(mt5_config.start_mt5(mt5_settings))
+    mt5_settings = load_mt5_settings(LIVE_MODE)
+
+    print(f"\n🎯 Trading Mode: {'LIVE' if LIVE_MODE else 'DEMO'}")
 
     if not mt5_config.start_mt5(mt5_settings):
-        print("Failed to start MT5. Exiting...")
+        print("❌ Failed to start MT5. Exiting...")
         return
 
     # ============================================================
     # 2. INITIALIZE STRATEGY
     # ============================================================
     strategy = RestrictiveVolumeStrategy(
-        favorite_hours=[8, 9, 10, 13, 14],  # London/NY open
-        favorite_weekdays=[1, 2, 3],  # Tue-Fri only
-        volume_spike_multiplier=2.0,  # 2x volume required
+        favorite_hours=[8, 9, 10, 13, 14],
+        favorite_weekdays=[1, 2, 3],
+        volume_spike_multiplier=2.0,
         sl_method="atr",
         tp_method="atr",
         sl_atr_multiplier=2.0,
         tp_atr_multiplier=4.0,
     )
-    # strategy = MACDTrendStrategy(
-    #     ema_period=200, macd_fast=12, macd_slow=26, macd_signal=9, risk_reward_ratio=2.5
-    # )
 
-    print(f"\n{strategy}")
-    print(f"Min bars required: {strategy.min_bars}\n")
+    print(f"\n🧠 Strategy Loaded: {strategy}")
+    print(f"📊 Minimum bars required: {strategy.min_bars}\n")
 
     # ============================================================
-    # 3. DEFINE TRADING PARAMETERS
+    # 3. TRADING PARAMETERS
     # ============================================================
-
-    symbols = ["EURUSDm", "GBPUSDm", "USDJPYm"]  # Adjust to your broker's symbols
-    timeframe = mt5.TIMEFRAME_M15
-
-    # ============================================================
-    # 4. SCAN SYMBOLS FOR SIGNALS
-    # ============================================================
-
+    SYMBOLS = ["EURUSDm", "GBPUSDm", "USDJPYm"]
+    TIMEFRAME = mt5.TIMEFRAME_M15
     TIMEFRAME_MINUTES = 15
+    MAX_OPEN_TRADES = 3
+
     last_run_minute = None
+
     print("=" * 60)
-    print("SCANNING FOR SIGNALS")
+    print("🔍 SCANNING FOR SIGNALS")
     print("=" * 60)
+
+    # ============================================================
+    # 4. MAIN LOOP
+    # ============================================================
     while True:
         now = datetime.now()
 
-        # Check alignment (e.g. 15m candle close)
-        if now.minute % TIMEFRAME_MINUTES == 0:
-            # Prevent running multiple times in same minute
-            if last_run_minute != now.minute:
-                last_run_minute = now.minute
+        if now.minute % TIMEFRAME_MINUTES != 0:
+            continue
 
-                readable_time = now.strftime("%A, %d %B %Y — %I:%M:%S %p")
-                print("\n" + "=" * 60)
-                print(f"🕒 {readable_time}")
-                print("=" * 60)
+        if last_run_minute == now.minute:
+            continue
 
-                for symbol in symbols:
-                    print(f"\n📊 Analyzing {symbol}...")
+        last_run_minute = now.minute
+        print("\n" + "=" * 60)
+        print(f"🕒 {now.strftime('%A, %d %B %Y — %I:%M:%S %p')}")
+        print("=" * 60)
 
-                    # Fetch historical data
-                    data = mt5_config.get_market_data_date_range(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        start_date=datetime.now() - timedelta(days=30),
-                        end_date=datetime.now(),
-                        # Enough for 200 EMA calculation
-                    )
+        for symbol in SYMBOLS:
+            print(f"\n📊 {symbol}")
 
-                    # Check if data was fetched
-                    if data.empty:
-                        print(f"   ⚠️ No data available for {symbol}")
-                        continue
+            data = mt5_config.get_market_data_date_range(
+                symbol=symbol,
+                timeframe=TIMEFRAME,
+                start_date=now - timedelta(days=30),
+                end_date=now,
+            )
 
-                    print(f"   ✅ Loaded {len(data)} bars")
+            if data.empty:
+                print("   ⚠️ No data available")
+                continue
 
-                    # Generate signal
-                    signal_result = strategy.generate_signal(data)
+            signal = strategy.generate_signal(data)
 
-                    # Display results
-                    print(f"\n   Trend: {signal_result['trend']}")
-                    print(f"   Current Price: {signal_result['entry_price']:.5f}")
-                    print(f"   EMA 200: {signal_result['ema_200']:.5f}")
-                    print(f"   MACD: {signal_result['macd_now']:.5f}")
-                    print(f"   Signal Line: {signal_result['macd_signal_now']:.5f}")
-                    print(f"   Reason: {signal_result['reason']}")
-                    print(f"   Position Size: {signal_result['position_size']}")
+            # ---------------- SAFE LOGGING ----------------
+            print(f"   Trend: {signal.get('trend')}")
+            print(f"   Reason: {signal.get('reason')}")
+            print(f"   Position Size: {signal.get('position_size')}")
 
-                    # Handle trading signal
-                    if signal_result["signal"]:
-                        print(f"\n   🎯 SIGNAL: {signal_result['signal'].upper()}")
-                        print(f"   Entry: {signal_result['entry_price']:.5f}")
-                        print(f"   Stop Loss: {signal_result['stop_loss']:.5f}")
-                        print(f"   Take Profit: {signal_result['take_profit']:.5f}")
+            if not signal["signal"]:
+                print("   ⏸️ No signal")
+                continue
 
-                        # Calculate risk
-                        risk = abs(
-                            signal_result["entry_price"] - signal_result["stop_loss"]
-                        )
-                        reward = abs(
-                            signal_result["take_profit"] - signal_result["entry_price"]
-                        )
-                        print(
-                            f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward/risk:.1f}"
-                        )
+            # ---------------- SIGNAL DETAILS ----------------
+            entry = signal["entry_price"]
+            sl = signal["stop_loss"]
+            tp = signal["take_profit"]
 
-                        MAX_OPEN_TRADES = 3
+            print(f"\n   🎯 SIGNAL: {signal['signal'].upper()}")
+            print(f"   Entry: {entry:.5f}")
+            print(f"   SL: {sl:.5f}")
+            print(f"   TP: {tp:.5f}")
 
-                        open_trades = mt5_config.get_open_trades_count()
+            risk = abs(entry - sl)
+            reward = abs(tp - entry)
 
-                        if open_trades >= MAX_OPEN_TRADES:
-                            print(
-                                f"   🚫 Trade skipped — open trades limit reached "
-                                f"({open_trades}/{MAX_OPEN_TRADES})"
-                            )
-                        else:
-                            print(
-                                f"   🚫 Trade count — open trades  " f"({open_trades})"
-                            )
+            print(f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward / risk:.2f}")
 
-                        # Execute trade (optional - uncomment to enable live trading)
-                        execute = "y"
-                        # Get symbol info once
+            open_trades = mt5_config.get_open_trades_count()
 
-                        sl = normalize_price(symbol, signal_result["stop_loss"])
-                        tp = normalize_price(symbol, signal_result["take_profit"])
-                        if execute.lower() == "y":
-                            success = mt5_config.execute_trade(
-                                symbol=symbol,
-                                signal=signal_result["signal"],
-                                stop_loss=sl,
-                                take_profit=tp,
-                                lot_size=signal_result[
-                                    "position_size"
-                                ],  # ❌ DO NOT normalize
-                                strategy_name="MACD_Trend",
-                            )
-                            if success:
-                                print("   ✅ Trade executed successfully!")
-                            else:
-                                print("   ❌ Trade execution failed")
-                    else:
-                        print(f"   ⏸️ No signal")
+            if open_trades >= MAX_OPEN_TRADES:
+                print(f"   🚫 Trade skipped — open trades ({open_trades}/{MAX_OPEN_TRADES})")
+                continue
 
-                print("✅ Cycle complete")
+            # ---------------- EXECUTION ----------------
+            EXECUTE_TRADE = True  # 🔴 SET TO FALSE TO DRY-RUN
+
+            if EXECUTE_TRADE:
+                sl = normalize_price(symbol, sl)
+                tp = normalize_price(symbol, tp)
+
+                success = mt5_config.execute_trade(
+                    symbol=symbol,
+                    signal=signal["signal"],
+                    stop_loss=sl,
+                    take_profit=tp,
+                    lot_size=signal["position_size"],  # DO NOT normalize
+                    strategy_name=strategy.__class__.__name__,
+                )
+
+                print("   ✅ Trade executed" if success else "   ❌ Trade failed")
+
+        print("\n✅ Cycle complete")
 
 
 if __name__ == "__main__":

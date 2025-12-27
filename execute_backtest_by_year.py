@@ -90,7 +90,7 @@ def backtest_by_year_df(
             backtester = Backtester(
                 strategy=strategy_instance,
                 trading_system=trading_system,
-                timeframe="1H",  # adjust as needed
+                timeframe=timeframe,  # adjust as needed
             )
 
             # Filter out symbols with no data
@@ -120,6 +120,11 @@ def backtest_by_year_df(
                 lowest_balance_pct = (
                     (lowest_balance - initial_balance) / initial_balance
                 ) * 100
+                highest_balance = equity_df["balance"].max()
+                highest_balance_pct = (
+                    (highest_balance - initial_balance) / initial_balance
+                ) * 100
+
 
                 results_list.append(
                     {
@@ -133,6 +138,8 @@ def backtest_by_year_df(
                         "return_pct": results["return_pct"],
                         "lowest_balance_pct": lowest_balance_pct,
                         "lowest_balance": lowest_balance,
+                        "highest_balance_pct": highest_balance_pct,
+                        "highest_balance": highest_balance,
                         "max_drawdown_pct": results["max_drawdown_pct"],
                         "final_balance": results["final_balance"],
                         "max_drawdown_pct": results["max_drawdown_pct"],
@@ -148,13 +155,13 @@ def backtest_by_year_df(
 strategies_df = pd.DataFrame(
     {
         "strategy_name": [
-            # "MacdTrendStrategy", 
+            # "MacdTrendStrategy",
             "RestrictiveVolumeStrategy"
-            ],
+        ],
         "strategy_instance": [
             # MACDTrendStrategy(risk_reward_ratio=2.5),
             RestrictiveVolumeStrategy(
-                favorite_hours=[8, 9, 10, 13, 14],  # London/NY open
+                favorite_hours=[8, 9, 10, 13, 14, 15],  # London/NY open
                 favorite_weekdays=[1, 2, 3],  # Tue-Fri only
                 volume_spike_multiplier=2.0,  # 2x volume required
                 sl_method="atr",
@@ -167,10 +174,15 @@ strategies_df = pd.DataFrame(
 )
 
 symbols = [
-    "EURUSDm",  # EUR/USD micro
-    # "GBPUSDm",  # GBP/USD micro
-    "USDJPYm",  # USD/JPY micro
+    # "EURUSDm",  # EUR/USD
+    "USDJPYm",  # USD/JPY
+    # "GBPUSDm",  # GBP/USD (volatile, good R:R)
+    # "AUDUSDm",  # AUD/USD (clean trends)
+    # "USDCADm",  # USD/CAD (oil correlation)
+    'AUDJPYm'
+    "CADJPYm"
 ]
+
 data_provider = MT5DataProvider(mt5_config)
 
 
@@ -179,5 +191,5 @@ yearly_results = backtest_by_year_df(
 )
 
 # Export results
-yearly_results.to_csv("yearly_strategy_comparison.csv", index=False)
+yearly_results.to_csv(f"yearly_strategy_comparison.csv", index=False)
 print(yearly_results)
