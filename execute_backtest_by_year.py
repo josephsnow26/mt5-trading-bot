@@ -125,7 +125,6 @@ def backtest_by_year_df(
                     (highest_balance - initial_balance) / initial_balance
                 ) * 100
 
-
                 results_list.append(
                     {
                         "year": year,
@@ -178,9 +177,7 @@ symbols = [
     "USDJPYm",  # USD/JPY
     # "GBPUSDm",  # GBP/USD (volatile, good R:R)
     # "AUDUSDm",  # AUD/USD (clean trends)
-    # "USDCADm",  # USD/CAD (oil correlation)
-    'AUDJPYm'
-    "CADJPYm"
+    # "AUDJPYm",
 ]
 
 data_provider = MT5DataProvider(mt5_config)

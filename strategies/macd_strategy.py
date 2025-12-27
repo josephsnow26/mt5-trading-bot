@@ -501,6 +501,7 @@ class RestrictiveVolumeStrategy:
             "entry_date": entry_time,
             "filters_passed": filters,
             "reason": None,
+            "position_size": 0.05,
         }
 
         # ---------------- DECISION LOGIC ----------------
