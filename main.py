@@ -1,21 +1,7 @@
 import MetaTrader5 as mt5
 from decouple import config
-from symbols import get_symbols
-import pandas as pd
-from trading_manager import TradeManager  # your TradeManager class
-from meter_trader_config import MetaTraderConfig
-from datetime import datetime, timedelta
-import time
-from datetime import datetime, timezone
-
-"""
-Example usage of MACDTrendStrategy with MetaTraderConfig
-Shows clean integration and proper error handling.
-"""
-
-import MetaTrader5 as mt5
-from datetime import datetime, timedelta
-from strategies.macd_strategy import MACDTrendStrategy, RestrictiveVolumeStrategy
+from mt5.meter_trader_config import MetaTraderConfig
+from strategies.strategy import RSIFlexibleStrategy
 
 
 live = True
@@ -43,6 +29,7 @@ def normalize_price(symbol, price):
     if info is None:
         raise RuntimeError(f"Symbol info not found for {symbol}")
     return round(price, info.digits)
+
 
 def main():
     from decouple import config
@@ -73,23 +60,19 @@ def main():
     # ============================================================
     # 2. INITIALIZE STRATEGY
     # ============================================================
-    strategy = RestrictiveVolumeStrategy(
-        favorite_hours=[8, 9, 10, 13, 14],
-        favorite_weekdays=[1, 2, 3],
-        volume_spike_multiplier=2.0,
-        sl_method="atr",
-        tp_method="atr",
-        sl_atr_multiplier=2.0,
-        tp_atr_multiplier=4.0,
+    strategy = RSIFlexibleStrategy(
+        sl_pips=30,  # Stop loss in pips
+        allowed_weekdays=[1, 2, 3],  # Monday-Friday trading
+        initial_balance=100,
     )
 
     print(f"\n🧠 Strategy Loaded: {strategy}")
-    print(f"📊 Minimum bars required: {strategy.min_bars}\n")
+    # print(f"📊 Minimum bars required: {strategy.min_bars}\n")
 
     # ============================================================
     # 3. TRADING PARAMETERS
     # ============================================================
-    SYMBOLS = ["USDJPYm"]
+    SYMBOLS = ["USDJPYm", "EURUSDm"]
     TIMEFRAME = mt5.TIMEFRAME_M15
     TIMEFRAME_MINUTES = 15
     MAX_OPEN_TRADES = 3
@@ -155,12 +138,16 @@ def main():
             risk = abs(entry - sl)
             reward = abs(tp - entry)
 
-            print(f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward / risk:.2f}")
+            print(
+                f"   Risk: {risk:.5f} | Reward: {reward:.5f} | RR: {reward / risk:.2f}"
+            )
 
             open_trades = mt5_config.get_open_trades_count()
 
             if open_trades >= MAX_OPEN_TRADES:
-                print(f"   🚫 Trade skipped — open trades ({open_trades}/{MAX_OPEN_TRADES})")
+                print(
+                    f"   🚫 Trade skipped — open trades ({open_trades}/{MAX_OPEN_TRADES})"
+                )
                 continue
 
             # ---------------- EXECUTION ----------------
@@ -175,7 +162,7 @@ def main():
                     signal=signal["signal"],
                     stop_loss=sl,
                     take_profit=tp,
-                    lot_size=signal["position_size"],  # DO NOT normalize
+                    lot_size=signal["lot_size"],  # DO NOT normalize
                     strategy_name=strategy.__class__.__name__,
                 )
 

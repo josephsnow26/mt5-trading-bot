@@ -5,13 +5,11 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD, EMAIndicator, SMAIndicator
 from ta.volatility import BollingerBands
 from datetime import datetime, timedelta, timezone
-from symbols import get_symbols
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from datetime import time as t
 
 
-symbols_dict = get_symbols().get("symbols_dict")
 
 
 class TradingStrategy:
@@ -953,47 +951,7 @@ class MetaTraderConfig:
             )
         return data
 
-    def get_trade_history(self, start_time, end_time):
-        """
-        Retrieves closed trades (history) from MT5 in a given time range.
-        SL/TP are not available in TradeDeal, so this version omits them.
-        """
-        if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=timezone.utc)
-        if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=timezone.utc)
-
-        all_data = []
-
-        symbols = get_symbols().get("symbols")
-        for sym in symbols:
-            history = MetaTrader5.history_deals_get(start_time, end_time, group=sym)
-            if history is None:
-                continue
-
-            for deal in history:
-                if deal.profit != 0:
-                    all_data.append(
-                        {
-                            "ticket": deal.ticket,
-                            "symbol": deal.symbol,
-                            "time": datetime.fromtimestamp(deal.time, tz=timezone.utc),
-                            "type": "buy" if deal.type == 0 else "sell",
-                            "volume": deal.volume,
-                            "price": deal.price,
-                            "profit": deal.profit,
-                            "comment": "hit_sl" if "sl" in deal.comment else "hit_tp",
-                        }
-                    )
-
-        if not all_data:
-            print(
-                "No closed trades found in this period. Try adjusting the date range or check broker history settings."
-            )
-            return pd.DataFrame()
-
-        data = pd.DataFrame(all_data)
-        self.export_data(data, filename="trade_history", filetype="csv")
+    
 
     def export_data(self, data, filename="market_data", filetype="csv"):
         """
@@ -1207,144 +1165,4 @@ class MetaTraderConfig:
         else:
             print(f"✅ Trade executed for {symbol}: {signal.upper()} at {price}")
 
-    def run_trading_loop(self, symbols, timeframe=MetaTrader5.TIMEFRAME_M5,trail=True):
-        """Continuously fetch data, apply strategy, and trade."""
-        delay = self.get_timeframe_duration(timeframe=timeframe)
-
-        while True:
-            if trail:
-                self.update_trailing_stop()
-            account_info = MetaTrader5.account_info()
-            balance = account_info.balance
-            lot_size = self.calculate_lot(balance)
-            print(f"Calculated lot size: {lot_size} for balance: {balance}")
-
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            print(f"\n🔄 Checking markets...{now}")
-
-            strategy = "macd_strategy"
-            trading_strategy = TradingStrategy(
-                strategy=strategy, symbols=symbols, lot_size=lot_size
-            )
-            trading_strategy.strategy_loop()
-
-            print("💰 Balance:", f"${balance}")
-
-            print(f"🕐 Delaying loop for {delay} seconds ({timeframe}) timeframe...\n")
-            time.sleep(delay)
-
-    def update_trailing_stop(self, deviation=10):
-        """
-        Dynamically updates SL for all open trades.
-
-        distance_pips: minimum distance (in pips) between current price and SL before moving
-        move_pips: how many pips to move SL forward each time
-        """
-        print("\n🔧 Updating SL of active trades...")
-
-        positions = MetaTrader5.positions_get()
-        if not positions:
-            print("⚠️ No active positions found")
-            return
-
-        for pos in positions:
-            symbol = pos.symbol
-            settings = symbols_dict[symbol]
-            trail_start = settings["trail_start"]
-            trail_step = settings["trail_step"]
-
-            tick = MetaTrader5.symbol_info_tick(symbol)
-            info = MetaTrader5.symbol_info(symbol)
-
-            if tick is None or info is None:
-                continue
-
-            current_price = (
-                tick.bid if pos.type == MetaTrader5.ORDER_TYPE_BUY else tick.ask
-            )
-            point = info.point
-            move_distance = trail_step * 10 * point  # convert pips → price units
-
-            # ---------------- BUY TRADE ----------------
-            if pos.type == MetaTrader5.ORDER_TYPE_BUY:
-                if pos.sl is None:
-                    sl_distance_pips = float("inf")
-                else:
-                    sl_distance_pips = (current_price - pos.sl) / (10 * point)
-
-                print(
-                    f"BUY {symbol} | SL distance = {sl_distance_pips:.1f} pips | "
-                    f"SL={pos.sl} | Price={current_price}"
-                )
-
-                if sl_distance_pips >= trail_start:
-                    new_sl = (pos.sl or current_price) + move_distance  # move SL upward
-                    print(
-                        f"➡️ Moving BUY SL from {pos.sl} → {new_sl} ({trail_step} pips)"
-                    )
-
-                    if pos.sl is None or new_sl > pos.sl:
-                        request = {
-                            "action": MetaTrader5.TRADE_ACTION_SLTP,
-                            "symbol": symbol,
-                            "position": pos.ticket,
-                            "sl": new_sl,
-                            "tp": pos.tp,
-                            "deviation": deviation,
-                            "comment": "Trailing stop update",
-                        }
-                        result = MetaTrader5.order_send(request)
-                        if result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
-                            print(f"✅ BUY {symbol}: SL moved up to {new_sl}")
-                        else:
-                            print(
-                                f"❌ Failed to modify SL for BUY {symbol}: {result.comment}"
-                            )
-
-            # ---------------- SELL TRADE ----------------
-            elif pos.type == MetaTrader5.ORDER_TYPE_SELL:
-                if pos.sl is None:
-                    sl_distance_pips = float("inf")
-                else:
-                    sl_distance_pips = (pos.sl - current_price) / (10 * point)
-
-                print(
-                    f"SELL {symbol} | SL distance = {sl_distance_pips:.1f} pips | "
-                    f"SL={pos.sl} | Price={current_price}"
-                )
-
-                if sl_distance_pips >= trail_start:
-                    new_sl = (
-                        pos.sl or current_price
-                    ) - move_distance  # move SL downward
-                    print(
-                        f"➡️ Moving SELL SL from {pos.sl} → {new_sl} ({trail_step} pips)"
-                    )
-
-                    if pos.sl is None or new_sl < pos.sl:
-                        request = {
-                            "action": MetaTrader5.TRADE_ACTION_SLTP,
-                            "symbol": symbol,
-                            "position": pos.ticket,
-                            "sl": new_sl,
-                            "tp": pos.tp,
-                            "deviation": deviation,
-                            "comment": "Trailing stop update",
-                        }
-                        result = MetaTrader5.order_send(request)
-                        if result.retcode == MetaTrader5.TRADE_RETCODE_DONE:
-                            print(f"✅ SELL {symbol}: SL moved down to {new_sl}")
-                        else:
-                            print(
-                                f"❌ Failed to modify SL for SELL {symbol}: {result.comment}"
-                            )
-
-    def calculate_lot(self, balance):
-        """
-        Calculate a safe lot size based on account balance.
-        Minimum lot size is 0.01.
-        """
-        raw = balance / 1000
-        lot = math.floor(raw * 100) / 100  # floor to 2 decimals
-        return max(lot, 0.01)
+    

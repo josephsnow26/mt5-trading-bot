@@ -1,4 +1,4 @@
-from mt5_lib import MetaTraderConfig
+from mt5.mt5_lib import MetaTraderConfig
 from datetime import datetime, timedelta
 from main import project_settings
 
