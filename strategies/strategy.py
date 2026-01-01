@@ -1,7 +1,8 @@
 import pandas as pd
 from typing import Dict, Any, Optional
 import MetaTrader5 as mt5
-import random
+import random, time
+from datetime import datetime
 
 
 class MACDTrendStrategy:
@@ -1861,25 +1862,30 @@ class RSIFlexibleStrategy:
         if not mt5.initialize():
             return round(lot, 2)
 
-        deals = mt5.history_deals_get(
-            mt5.time_current() - 60 * 60 * 24 * 30,  # last 30 days
-            mt5.time_current(),
-        )
+        now = int(time.time())
+        from_time = now - 60 * 60 * 24 * 30  # last 30 days
+
+        deals = mt5.history_deals_get(from_time, now)
 
         if deals is None or len(deals) < 2:
             return round(lot, 2)
 
-        # keep only closed trades with P/L
-        closed_deals = [d for d in deals if d.profit is not None]
+        # Get only exit deals (entry=1) for actual trades (type 0=BUY, 1=SELL)
+        exit_deals = []
+        for d in deals:
+            if d.type in [mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL] and d.entry == 1:
+                exit_deals.append(d)
 
-        if len(closed_deals) < 2:
-            return round(lot, 2)
+        # Sort by time (newest first)
+        exit_deals.sort(key=lambda d: d.time, reverse=True)
 
-        last = closed_deals[-1]
-        prev = closed_deals[-2]
-        print(last.profit)
-        print(prev.profit)
-        if last.profit > 0 and prev.profit > 0:
+        if len(exit_deals) >= 2:
+            last_profit = exit_deals[0].profit
+            second_last_profit = exit_deals[1].profit
+
+        # If you want to return them
+
+        if last_profit > 0 and second_last_profit > 0:
             lot += 0.01  # increase after 2 wins
 
         return round(lot, 2)
@@ -1893,6 +1899,8 @@ class RSIFlexibleStrategy:
 
     # ---------------- MAIN LOGIC ---------------- #
     def generate_signal(self, price_data: pd.DataFrame) -> Dict[str, Any]:
+        lot = self._get_lot_size()
+        print(f"lot = {lot}")
         if price_data is None or price_data.empty:
             return self._empty_signal("Price data empty")
 
