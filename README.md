@@ -61,10 +61,10 @@ Risk–Reward is fixed at **1:1**.
 
 ---
 
-## 🛑 Capital Protection
+## 🛑 Profit Retention
 
 Trading is automatically stopped when:
-- Account balance drops below **50% of starting balance**
+- Account balance rises above **50% of starting balance**
 
 This prevents account blow-up and enforces discipline.
 
