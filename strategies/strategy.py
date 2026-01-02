@@ -1160,6 +1160,7 @@ class MACDRandomnessStrategy:
         sl_pips: float = 50.0,  # SL in pips
         tp_pips: Optional[float] = None,  # TP in pips
         allowed_weekdays: Optional[list[int]] = None,
+        allowed_hours: Optional[list[int]] = None,  # ✅ NEW
         starting_lot: float = 0.01,
         backtest_mode: bool = False,
         last_trade_won: bool = False,  # assume first trade is a win in backtest
@@ -1171,6 +1172,7 @@ class MACDRandomnessStrategy:
         self.sl_pips = sl_pips
         self.tp_pips = tp_pips or sl_pips
         self.allowed_weekdays = allowed_weekdays or list(range(7))
+        self.allowed_hours = allowed_hours or list(range(24))  # ✅ default = all hours
         self.blocked_dates: list[str] = []
         self.min_bars = max(ema_period, macd_slow + macd_signal)
 
@@ -1255,6 +1257,12 @@ class MACDRandomnessStrategy:
             return False
         return True
 
+    def _is_allowed_hour(self, timestamp) -> bool:
+        if timestamp is None:
+            return False
+        hour = pd.to_datetime(timestamp).hour
+        return hour in self.allowed_hours
+
     # ---------------- LOT SIZING ---------------- #
 
     def _get_lot_size(self) -> float:
@@ -1303,8 +1311,12 @@ class MACDRandomnessStrategy:
             return self._empty_signal(error)
 
         entry_time = price_data["time"].iloc[-1]
+
         if not self._is_allowed_date(entry_time):
-            return self._empty_signal("Trading not allowed on this date")
+            return self._empty_signal("Weekday not allowed")
+
+        if not self._is_allowed_hour(entry_time):
+            return self._empty_signal("Hour not allowed")
 
         try:
             closes = price_data["close"]
@@ -1741,6 +1753,7 @@ class RSIFlexibleStrategy:
         sl_pips: float = 20.0,
         tp_pips: Optional[float] = None,
         allowed_weekdays: Optional[list[int]] = None,
+        allowed_hours: Optional[list[int]] = None,  # ✅ NEW
         starting_lot: float = 0.01,
         rsi_period: int = 14,
         rsi_buy_level: float = 35,
@@ -1755,6 +1768,7 @@ class RSIFlexibleStrategy:
         self.tp_pips = tp_pips or sl_pips  # 1:1 R/R
 
         self.allowed_weekdays = allowed_weekdays or list(range(7))
+        self.allowed_hours = allowed_hours or list(range(24))  # ✅ default = all hours
 
         self.starting_lot = starting_lot
         self.current_lot = starting_lot
@@ -1811,7 +1825,7 @@ class RSIFlexibleStrategy:
         Stops trading if balance drops below 50% of starting balance
         """
         bal = self.get_balance()
-        if (bal - self.starting_balance) >= 0.5 * self.starting_balance:
+        if (bal - self.starting_balance) >= 0.6 * self.starting_balance:
             return True
         else:
             return False
@@ -1828,6 +1842,12 @@ class RSIFlexibleStrategy:
         if timestamp is None:
             return False
         return pd.to_datetime(timestamp).weekday() in self.allowed_weekdays
+
+    def _is_allowed_hour(self, timestamp) -> bool:
+        if timestamp is None:
+            return False
+        hour = pd.to_datetime(timestamp).hour
+        return hour in self.allowed_hours
 
     def _pip_value(self, price: float) -> float:
         return 0.01 if price > 20 else 0.0001
@@ -1899,8 +1919,6 @@ class RSIFlexibleStrategy:
 
     # ---------------- MAIN LOGIC ---------------- #
     def generate_signal(self, price_data: pd.DataFrame) -> Dict[str, Any]:
-        lot = self._get_lot_size()
-        print(f"lot = {lot}")
         if price_data is None or price_data.empty:
             return self._empty_signal("Price data empty")
 
@@ -1918,7 +1936,10 @@ class RSIFlexibleStrategy:
 
         entry_time = self._get_entry_time(price_data)
         if not self._is_allowed_date(entry_time):
-            return self._empty_signal("Trading not allowed")
+            return self._empty_signal("Weekday not allowed")
+
+        if not self._is_allowed_hour(entry_time):
+            return self._empty_signal("Hour not allowed")
 
         close = price_data["close"]
         open_ = price_data["open"]
@@ -1937,7 +1958,6 @@ class RSIFlexibleStrategy:
         rsi = self._calculate_rsi(close)
         ema = close.ewm(span=self.ema_trend).mean()
         price = close.iloc[-1]
-        pv = self._pip_value(price)
 
         # EMA slope trend (optional guidance, not strict)
         ema_slope = ema.iloc[-1] - ema.iloc[-self.ema_slope_lookback]
