@@ -1825,8 +1825,11 @@ class RSIFlexibleStrategy:
         Stops trading if balance drops below 50% of starting balance
         """
         bal = self.get_balance()
-        if (bal - self.starting_balance) >= 0.6 * self.starting_balance:
+        if abs(bal - self.starting_balance) >= 0.6 * self.starting_balance:
             return True
+        # if abs(bal - self.starting_balance) <= 0.6 * self.starting_balance:
+        #     return True
+        
         else:
             return False
 

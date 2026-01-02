@@ -67,7 +67,6 @@ def main():
     )
 
     print(f"\n🧠 Strategy Loaded: {strategy}")
-    # print(f"📊 Minimum bars required: {strategy.min_bars}\n")
 
     # ============================================================
     # 3. TRADING PARAMETERS
