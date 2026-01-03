@@ -32,9 +32,7 @@ timeframe = MetaTrader5.TIMEFRAME_M15
 # higher_tf = MetaTrader5.TIMEFRAME_M30
 
 
-def backtest_by_year_df(
-    symbols, start_year, end_year, initial_balance=100
-):
+def backtest_by_year_df(symbols, start_year, end_year, initial_balance=100):
     """
     Run backtests for multiple strategies year by year using a DataFrame to hold strategies.
 
@@ -91,9 +89,7 @@ def backtest_by_year_df(
 
         # Filter out symbols with no data
         filtered_df_dict = {
-            sym: df
-            for sym, df in df_dict.items()
-            if df is not None and not df.empty
+            sym: df for sym, df in df_dict.items() if df is not None and not df.empty
         }
         if not filtered_df_dict:
             print(
@@ -109,7 +105,7 @@ def backtest_by_year_df(
             end_date=year_end,
         )
 
-        if results:        
+        if results:
 
             lowest_balance = results["lowest_balance"]
             lowest_balance_pct = (
@@ -143,24 +139,22 @@ def backtest_by_year_df(
     return pd.DataFrame(results_list)
 
 
-
 symbols = [
     # "EURUSDm",  # EUR/USD
     # "USDJPYm",  # USD/JPY
     # "AUDJPYm",
 
-    # 100%
-    "GBPJPYm",
-    "NZDJPYm"
-   
+    # 100% or no blowout
+    # "GBPJPYm",
+    # "NZDJPYm",
+    # "EURJPYm",
+    "CADJPYm"
 ]
 
 data_provider = MT5DataProvider(mt5_config)
 
 
-yearly_results = backtest_by_year_df(
-    symbols, start_year=2021, end_year=2025
-)
+yearly_results = backtest_by_year_df(symbols, start_year=2021, end_year=2025)
 
 # Export results
 yearly_results.to_csv(f"yearly_strategy_comparison.csv", index=False)

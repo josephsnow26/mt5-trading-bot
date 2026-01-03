@@ -71,7 +71,7 @@ def main():
     # ============================================================
     # 3. TRADING PARAMETERS
     # ============================================================
-    SYMBOLS = ["GBPJPYm", "NZDJPYm"]
+    SYMBOLS = ["GBPJPYm", "NZDJPYm", "EURJPYm", "USDJPYm"]
     TIMEFRAME = mt5.TIMEFRAME_M15
     TIMEFRAME_MINUTES = 15
     MAX_OPEN_TRADES = 3
