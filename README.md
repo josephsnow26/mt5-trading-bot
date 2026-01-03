@@ -70,6 +70,13 @@ This prevents account blow-up and enforces discipline.
 
 ---
 
+## 🛑 Recommended Symbols with the best win rate
+**USDJPYm**
+**EURJPYm**
+**GBPJPYm**
+**NZDJPYm**
+
+
 ## ⚙️ Backtest vs Live Mode
 
 | Feature            | Backtest Mode | Live MT5 |
