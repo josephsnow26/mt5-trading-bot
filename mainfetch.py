@@ -17,10 +17,10 @@ if not mt5.initialize(
 print("MT5 connected:", mt5.account_info().server)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SYMBOL    = "BTCUSDm"
-TIMEFRAME = mt5.TIMEFRAME_M15
+SYMBOL    = "USDJPYm"
+TIMEFRAME = mt5.TIMEFRAME_M30
 
-t = "15m"
+t = "30m"
 
 # ── Select symbol ─────────────────────────────────────────────────────────────
 if not mt5.symbol_select(SYMBOL, True):
@@ -49,7 +49,7 @@ if rates is None or len(rates) == 0:
     # Second try: use copy_rates_range with smaller range
     print("\nTrying copy_rates_range with 2025 only...")
     START = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    END   = datetime(2026, 6, 11, tzinfo=timezone.utc)
+    END   = datetime(2026, 6, 29, tzinfo=timezone.utc)
     rates = mt5.copy_rates_range(SYMBOL, TIMEFRAME, START, END)
 
     if rates is None or len(rates) == 0:
@@ -63,6 +63,40 @@ df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
 print(f"\nFetched {len(df)} bars")
 print(f"Range: {df['time'].iloc[0]} → {df['time'].iloc[-1]}")
 print(df.head())
+
+# ── Gap check ─────────────────────────────────────────────────────────────────
+# copy_rates_from_pos / copy_rates_range only return what the terminal's LOCAL
+# history cache already has — they do NOT force a fresh download for anything
+# missing, and a partial result is not None, so it fails silently otherwise.
+# Flag any gap wider than expected for this timeframe so an incomplete
+# terminal history cache doesn't quietly ship into a backtest.
+GAP_THRESHOLD_HOURS = 50  # covers a normal Fri~22:00 -> Sun~22:00 UTC weekend
+# close without flagging it as an error; anything wider is suspicious.
+
+diffs = df["time"].diff()
+gap_mask = diffs > pd.Timedelta(hours=GAP_THRESHOLD_HOURS)
+gaps = df.loc[gap_mask, "time"]
+
+if gaps.empty:
+    print(f"\nGap check OK — no gaps wider than {GAP_THRESHOLD_HOURS}h found.")
+else:
+    print(f"\n*** WARNING: {len(gaps)} gap(s) wider than {GAP_THRESHOLD_HOURS}h found ***")
+    for idx in gaps.index:
+        gap_start = df["time"].iloc[idx - 1]
+        gap_end = df["time"].iloc[idx]
+        gap_len = gap_end - gap_start
+        print(f"  Missing: {gap_start} -> {gap_end}  ({gap_len})")
+    print(
+        "Most of these are probably legitimate extended closures (holidays "
+        "like Thanksgiving/Easter/July 4th, where gold closes early and "
+        "reopens late around a normal weekend) — expected, not a bug. But "
+        "any gap of several DAYS with no obvious holiday nearby likely means "
+        "the terminal's local history cache is incomplete for that window, "
+        "not that the market was closed. Check each one against a market "
+        "calendar; for a real gap, open this symbol's chart in the MT5 "
+        "terminal and manually scroll back through the missing window to "
+        "force a backfill from the broker, then re-run this export."
+    )
 
 # ── Save ──────────────────────────────────────────────────────────────────────
 save_dir = os.path.join(os.path.dirname(__file__), "data")
