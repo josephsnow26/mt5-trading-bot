@@ -17,10 +17,10 @@ if not mt5.initialize(
 print("MT5 connected:", mt5.account_info().server)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SYMBOL    = "USDJPYm"
-TIMEFRAME = mt5.TIMEFRAME_M30
+SYMBOL    = "XAUUSDm"
+TIMEFRAME = mt5.TIMEFRAME_M1
 
-t = "30m"
+t = "1m"
 
 # ── Select symbol ─────────────────────────────────────────────────────────────
 if not mt5.symbol_select(SYMBOL, True):

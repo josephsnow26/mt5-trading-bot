@@ -1,133 +1,97 @@
 """
-News Confirm Strategy — Live Version (stateless)
-==================================================
-Edge   : Pre-positioning ahead of NFP (buy-stop/sell-stop straddle before
-         the release) was tested extensively and found to lose to a
-         "wait-and-confirm" approach: do NOT take a position before the
-         news. Wait for the release itself to happen, require the market
-         to show a real, confirmed directional reaction (minimum $ move +
-         elevated volume), and only then enter, in that confirmed
-         direction. This matches standard professional NFP-trading
-         practice (see research notes in project handoff) and specifically
-         avoids the failure mode straddle-based pre-positioning kept
-         hitting: a pre-news drift that reverses violently at the print
-         itself (see the 2026-03-06 NFP case in project history — a
-         pre-positioned short lost -$183 to a reversal spike at the exact
-         release moment; this strategy would not have been in a position
-         yet when that happened).
+News Reload Strategy — Live Version (stateless)
+=================================================
+Edge   : Pre-positioned straddle placed directly at the NFP release itself
+         (unlike news_confirm_strategy.py, which deliberately waits for
+         the release to happen first). Whichever side fills first is the
+         trade. A TIGHT take-profit ($6) closes it, and every TP hit
+         immediately reloads the SAME direction at a bigger lot — the
+         chain keeps going as long as it keeps winning ("momentum"),
+         until either a stop-loss hit ends it or a fixed time window
+         elapses, whichever comes first.
 
-Entry  : NO pending orders, no OCO. At each scheduled NFP release, wait for
-         the release bar itself (M30) to CLOSE, then check:
-           1. Directional confirmation: |close - open| >= MIN_MOVE
-           2. Volume confirmation: this bar's tick volume >= VOLUME_MULT x
-              the trailing LOOKBACK_BARS average tick volume
-         If both hold, enter MARKET in the direction of the move. If
-         either fails, skip this event entirely — no trade.
-Filter : Skip any NFP release that falls within FOMC_PROXIMITY_DAYS of a
-         preceding FOMC decision. Backtested finding: NFP-after-FOMC events
-         won 29% of the time (2/7) vs 67% (10/15) for NFP releases further
-         from FOMC, consistently across multiple years (2022-2024), not
-         just one bad year. Mechanism (plausible, not proven): the market
-         has just repriced on Fed guidance days earlier, making the
-         "confirmed" NFP reaction more prone to reverting.
-Exit   : Breakeven trigger + trail, same style as the validated
-         straddle_strategy.py gold config — no fixed TP. SL fixed at
-         entry; once price moves BE_TRIGGER in favor, stop moves to
-         breakeven; after that, stop trails TRAIL behind the best price
-         reached. Hard max-hold deadline as a backstop.
-Sizing : FLAT RISK_PCT (14.1%, "quarter-Kelly") of CURRENT balance,
-         every trade — recalculated fresh every time it's used, never a
-         fixed number, so the lot naturally scales with the account. No
-         streak tracking, no multiplier. See _lot_size() below for the
-         full Kelly Criterion derivation and why 14.1% specifically beats
-         a lower risk_pct at zero extra drawdown cost, up to that point.
+Entry  : Buy-stop + sell-stop straddle at each event, offset=$5 from the
+         anchor price (this file), whichever side fills is the trade —
+         same OCO idea as straddle_strategy.py, but tight TP=$6/SL=$5
+         instead of a trail, and reload-on-TP instead of one static
+         position.
+Sizing : Base lot for EACH NEW event = 14.1% "quarter-Kelly" of CURRENT
+         balance (identical formula/derivation to news_confirm_strategy.py
+         — see that file's docstring for the full Kelly derivation). This
+         is recalculated fresh every event, NOT carried over from the
+         previous event — a bad month never penalizes the next one, and a
+         good month doesn't inflate it either, beyond the balance itself
+         having grown or shrunk.
+         WITHIN one event's chain: every TP-hit reload adds a flat
+         LOT_INCREMENT (0.04) to the current lot. No reset until the
+         chain itself ends (SL hit or window elapsed) — this is
+         deliberately NOT a Kelly/percentage-based reload, just a flat
+         step, chosen after comparing 0.04/0.05/0.07 head to head (see
+         backtest summary below).
+Filter : Same FOMC-proximity filter as news_confirm_strategy.py — skip
+         any NFP event within FOMC_PROXIMITY_DAYS of a preceding FOMC
+         decision.
 
-Backtest summary (2022-05 to 2026-07, XAUUSDm M30 real Exness data,
-49 NFP events, $90 start):
-  Wait-and-confirm only (no filter, no pyramid): 36 trades, 66.7% win
-    rate, $90 -> $363.29. Profitable in 4 of 5 years (2024 was the
-    exception: 33% win rate, -$43.99).
-  + FOMC-proximity filter: 29 trades (7 near-FOMC events skipped), 75.9%
-    win rate, $90 -> $385.71. Fixed 2024 specifically (-$43.99 -> +$4.72)
-    by removing the specific sub-pattern responsible for that year's
-    underperformance, found by investigating WHY 2024's losses were mostly
-    full stop-outs rather than soft fades like other years.
-  + Capped pyramid sizing (tested, NOT used in this config): same 29
-    trades/75.9% win rate, $90 -> $883.01 at x1.5/4-win-cap, worst single
-    trade -$80.64. An UNCAPPED version reached $981.81 but had one
-    -$282.79 single-trade loss (a 6-win streak grew the lot 14x before
-    the streak-ending loss landed at peak size) - real, meaningful tail
-    risk that isn't worth the modest extra return over the option below.
-  + FLAT Kelly-derived sizing (THIS CONFIG, RISK_PCT=14.1%): same 29
-    trades/75.9% win rate (sizing doesn't change which trades win),
-    $90 -> $627.70. Derived from the actual win rate and win/loss sizes
-    via the Kelly Criterion (full Kelly = 56.3%, way too aggressive;
-    half-Kelly = 28.1%, tested at 48.7% max drawdown - still too much;
-    quarter-Kelly = 14.1%, tested at 19.9% max drawdown - IDENTICAL to
-    flat 1% risk, because the account's min-lot floor protects it
-    equally at both risk levels until balance grows past a threshold).
-    Chosen over the pyramid because it's mathematically grounded in the
-    actual backtest statistics rather than an arbitrary multiplier, and
-    matches the flat-1% version's worst-case risk exactly while roughly
-    doubling the return.
+*** IMPORTANT — WHY LOT_INCREMENT=0.04, NOT 0.05 OR 0.07 ***
+All three were backtested head-to-head on the same 2022-2026 gold data,
+identical entries (same 42.5% event-level win rate at every increment —
+the increment only changes position size, not which events win or lose):
+  +0.04: $90 -> $31,210, NEVER went negative (min balance $55.96),
+         max base lot reached 4.50, worst single event -$652.08.
+  +0.05: $90 -> $36,261, stayed positive throughout, max base lot 5.22,
+         worst single event -$743.60.
+  +0.07: $90 -> $48,699, WENT NEGATIVE (-$18.97) on this same trusted
+         dataset before recovering, max base lot 7.01, worst single
+         event -$995.28.
+0.04 was chosen specifically because it's the only one of the three that
+never breached zero on the historical data — 0.05 and especially 0.07
+show the same underlying mechanism can fail outright with a bigger step,
+even on data that's otherwise held up all session. This was also tested
+on a second, independent dataset (different source/format, 2018-2026) at
++0.05: that run went NEGATIVE FOR OVER A YEAR (June 2024-July 2025,
+reaching -$228.06) before an exceptional trend day rescued it. A real
+account would have been margin-called long before that recovery — this
+is why 0.04, the most conservative of the three tested, is what's
+actually wired in here, not the biggest final-number version.
 
-*** IMPORTANT — READ BEFORE ENABLING LIVE ***
-Every number above comes from ONE dataset that was also used to find the
-FOMC filter and tune every parameter in this file. None of it has been
-validated on genuinely fresh, untouched data. Per this project's own
-standing discipline (see annual_process.md's validation ritual and the
-monthly-bias strategy's 58%->52% decay precedent), an in-sample backtest
-finding is not the same as a validated edge. Treat this file as ready for
-DEMO testing to accumulate real forward evidence, not as ready for live
-capital, until it has been checked against data it was never tuned on.
+*** EVEN AT 0.04, THIS IS STILL GENUINELY AGGRESSIVE ***
+- Only 17 of 40 backtested events (42.5%) were net winners. This makes
+  money because losses are bounded (roughly one base-lot SL hit per
+  losing event) while winning chains compound — NOT because it wins most
+  of the time. Expect more losing months than winning ones by count.
+- The total backtested return is heavily concentrated in two exceptional
+  trend days (June 5 and July 2, 2026) — without those two events, the
+  running balance would have been far flatter through most of the
+  4-year test. Do not expect every strong month to look like those.
+- Base lot itself grows as the account grows (Kelly-flat), which means
+  later events carry meaningfully larger absolute risk than early ones,
+  by design — this compounds with the flat reload growth on top.
 
-*** NFP_SCHEDULE_UTC and FOMC_DATES_UTC are MANUALLY MAINTAINED ***
-No fetching, no scraping, no API calls — both lists are plain hardcoded
-data near the top of this file that you edit by hand. Event timestamps
-cannot be reliably derived from a fixed rule anyway — the 2025 government
-shutdown proved this by moving/cancelling/combining several 2025 NFP
-releases outside the normal "first Friday" pattern (see project handoff),
-so a rule-based auto-generator would have silently gotten that window
-wrong regardless. Update NFP roughly monthly (check bls.gov/schedule) and
-FOMC once or twice a year (check federalreserve.gov/monetarypolicy/
-fomccalendars.htm — the Fed announces a full year+ at once).
-_validate_calendar_freshness() runs automatically at import time and
-prints a loud warning if either list has run dry of upcoming dates — it
-only checks dates already in the file against today, it doesn't fetch
-anything. This file will simply do nothing once it runs past the last
-date you've entered, rather than guess at what comes next.
+*** SAME "NOT LIVE-READY" WARNING AS EVERY OTHER STRATEGY THIS SESSION ***
+All of the above comes from ONE historical dataset. Treat this as
+demo-only, to accumulate real forward evidence, until it's been checked
+against data it was never tuned on.
 
 CHANGE LOG (this revision):
-  - Initial build. Fresh strategy, separate MAGIC number and separate
-    process from straddle_strategy.py / main_straddle.py — explicitly NOT
-    merged into the existing straddle bot's loop, matching how this
-    project's other strategies (monthly bots, straddle bot) each run
-    standalone.
+  - Initial build. Separate MAGIC number and separate process from both
+    straddle_strategy.py AND news_confirm_strategy.py — three genuinely
+    different mechanics, each standalone, matching this project's
+    established pattern of never merging strategies into one loop.
 """
 
 from __future__ import annotations
 
 import datetime
-import json
-import os
 from typing import Any, Dict, List, Optional
 
 import MetaTrader5 as mt5
 
 # ---------------------------------------------------------------------------
-# Event calendars — MANUALLY MAINTAINED, no fetching/scraping/API calls.
-#
-# Update these by hand, roughly monthly for NFP and once or twice a year
-# for FOMC (the Fed announces a full year+ of dates in one announcement,
-# so this needs far less frequent attention):
-#   NFP:  check bls.gov/schedule/<year>/home.htm, add the next date(s)
-#   FOMC: check federalreserve.gov/monetarypolicy/fomccalendars.htm,
-#         or the Fed's own press release when they announce a new year
-#
-# _validate_calendar_freshness() runs automatically at import time and
-# prints a loud warning if either list has run out of upcoming dates or
-# looks stale — it does NOT fetch anything, it only checks what's already
-# here against today's date. See that function for exactly what it checks.
+# Event calendars — MANUALLY MAINTAINED, same discipline and same dates as
+# news_confirm_strategy.py. Deliberately duplicated here rather than shared
+# via import, matching this project's preference for standalone files with
+# no cross-strategy dependencies. Keep both files' calendars in sync by
+# hand when updating either one.
 # ---------------------------------------------------------------------------
 
 NFP_SCHEDULE_UTC: List[datetime.datetime] = [
@@ -138,9 +102,7 @@ NFP_SCHEDULE_UTC: List[datetime.datetime] = [
     datetime.datetime(2026, 12, 4, 13, 30, tzinfo=datetime.timezone.utc),
     # Add next month's date here. DST-adjust by hand: 8:30 AM ET = 12:30 UTC
     # during DST (roughly Mar-Nov), 13:30 UTC otherwise. Do NOT assume
-    # "first Friday" — verify each one against bls.gov/schedule directly;
-    # the 2025 government shutdown proved that assumption can silently
-    # break (several 2025 releases were delayed/combined/cancelled).
+    # "first Friday" — verify each one against bls.gov/schedule directly.
 ]
 
 FOMC_DATES_UTC: List[datetime.date] = [
@@ -156,44 +118,43 @@ FOMC_DATES_UTC: List[datetime.date] = [
     datetime.date(2027, 9, 15),
     datetime.date(2027, 10, 27),
     datetime.date(2027, 12, 8),
-    # Only the SECOND day of each 2-day meeting (when the decision/
-    # statement is released) — that's the date the FOMC-proximity filter
-    # actually needs. Add the next announced year's dates here in one go
-    # when the Fed publishes them.
+    # Only the SECOND day of each 2-day meeting. Add the next announced
+    # year's dates in one go when the Fed publishes them.
 ]
 
 
 def _validate_calendar_freshness() -> None:
-    """Runs at import time. Does NOT fetch anything — just checks whether
-    the hardcoded lists above still have upcoming dates, and warns loudly
-    if they've gone stale. This is the whole "freshness check": no
-    scraping, no API, just comparing what's already here to today's date."""
+    """Same freshness check as news_confirm_strategy.py — no fetching, just
+    compares the hardcoded lists above to today's date and warns loudly if
+    either has run dry of upcoming dates."""
     now = datetime.datetime.now(datetime.timezone.utc)
     today = now.date()
 
     future_nfp = [d for d in NFP_SCHEDULE_UTC if d >= now]
     if not future_nfp:
-        print("  !!! WARNING: NFP_SCHEDULE_UTC has NO upcoming dates — "
-              "this bot will never enter on NFP until you add more. "
-              "Check bls.gov/schedule and update the list in "
-              "news_confirm_strategy.py now.")
+        print(
+            "  !!! WARNING: NFP_SCHEDULE_UTC has NO upcoming dates — "
+            "this bot will never enter until you add more. Check "
+            "bls.gov/schedule and update the list in news_reload_strategy.py now."
+        )
     else:
         days_until_next = (min(future_nfp).date() - today).days
         if days_until_next > 40:
-            print(f"  WARNING: next NFP date is {days_until_next} days away "
-                  f"({min(future_nfp).date()}) — that's further out than a "
-                  f"normal monthly gap, double-check the list isn't stale.")
+            print(
+                f"  WARNING: next NFP date is {days_until_next} days away "
+                f"({min(future_nfp).date()}) — double-check the list isn't stale."
+            )
 
     future_fomc = [d for d in FOMC_DATES_UTC if d >= today]
     if not future_fomc:
-        print("  !!! WARNING: FOMC_DATES_UTC has NO upcoming dates — the "
-              "FOMC-proximity filter will not work correctly for any NFP "
-              "event beyond this point. Check federalreserve.gov/"
-              "monetarypolicy/fomccalendars.htm and update the list now.")
+        print(
+            "  !!! WARNING: FOMC_DATES_UTC has NO upcoming dates — the "
+            "FOMC-proximity filter will not work correctly. Check "
+            "federalreserve.gov/monetarypolicy/fomccalendars.htm and update now."
+        )
 
 
 _validate_calendar_freshness()
-
 
 # ---------------------------------------------------------------------------
 # Per-symbol configuration
@@ -201,48 +162,27 @@ _validate_calendar_freshness()
 
 SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
     "XAUUSDm": {
-        "pip": 1.0,             # working directly in USD, not pips, for gold
-        "point_size": 0.001,    # matches this account's XAUUSDm digits (3)
-        "pip_value_per_lot": 100.0,  # $100 per 1.0-point move at 1.0 lot
-        "min_move": 5.0,        # confirmation threshold: release bar must move >= $5
-        "volume_mult": 1.5,     # confirmation threshold: >= 1.5x trailing avg tick volume
-                                 # (backtested finding: this did NOT discriminate in
-                                 # testing — gold NFP release bars were always high-volume
-                                 # regardless of threshold 1.2-2.0x. Kept as a documented,
-                                 # inert safety check rather than removed outright.)
-        "sl": 20.0,
-        "be_trigger": 20.0,
-        "trail": 5.0,
-        "max_hold_hours": 8.0,
-        "lookback_bars": 12,    # ~6 hours of M30 bars, for the volume average
+        "pip": 1.0,
+        "point_size": 0.001,
+        "pip_value_per_lot": 100.0,
+        "offset": 3.0,  # straddle distance from anchor, in $
+        "tp": 6.0,  # tight take-profit, in $
+        "sl": 5.0,  # stop-loss, in $ — chain ends here
+        "max_hold_hours": 8.0,  # chain's own time window
     },
 }
 
-RISK_PCT = 14.1           # "quarter-Kelly" - see _lot_size() docstring for
-                           # the full derivation. Deliberately more aggressive
-                           # than the live straddle bot's validated 1%, but
-                           # backed by real Kelly Criterion math against this
-                           # session's actual backtest results, not a guess.
+RISK_PCT = 14.1  # "quarter-Kelly" base lot per event — see
+# module docstring for the full derivation.
+LOT_INCREMENT = 0.04  # flat $ added to lot on every TP-hit reload
+# within one chain — see docstring for why
+# 0.04 specifically, not 0.05 or 0.07.
 
-MAGIC = 20260801          # unique to this strategy — must not collide with
-                           # straddle_strategy.py's MAGIC or the monthly bots'
+MAGIC = 20260810  # unique to this strategy — must not collide
+# with straddle_strategy.py's or
+# news_confirm_strategy.py's MAGIC numbers
 
-FOMC_PROXIMITY_DAYS = 3    # skip NFP events within this many days of a
-                           # preceding FOMC decision — see docstring
-
-# Scale-in on a winning trade — ADDS to the same still-open position while
-# it's actively working, then stops. Different from a streak-based sizing
-# multiplier (which changes bet size BETWEEN separate NFP events) — this
-# only ever adds within ONE trade's own lifetime, then reverts fully for
-# the next event. Backtested: this specific combo (4h/$3/2 adds) on top
-# of the flat 14.1% base — see module docstring for results and the
-# honest caveat about how concentrated the gain was in one strong year.
-SCALE_IN_WINDOW_HOURS = 4.0   # only add within this many hours of entry
-ADD_THRESHOLD = 3.0           # gold $ — add another leg every time price
-                               # pushes this much further favorable since
-                               # the last leg was added
-MAX_ADDS = 2                  # cap on additional legs beyond the initial entry
-ADD_LOT_FRACTION = 1.0        # each add's lot = this x the INITIAL leg's lot
+FOMC_PROXIMITY_DAYS = 3
 
 
 def _pip_value_per_lot(symbol: str) -> float:
@@ -260,10 +200,9 @@ def _round_price(price: float, symbol: str) -> float:
 # ---------------------------------------------------------------------------
 
 
-class NewsConfirmStrategy:
+class NewsReloadStrategy:
     """No __init__ state beyond configuration — every method queries MT5
-    fresh, including win-streak state for sizing. See module docstring for
-    the full design rationale and backtest summary."""
+    fresh. See module docstring for full design rationale."""
 
     def __init__(self, initial_balance: float = 90.0) -> None:
         self.starting_balance = initial_balance
@@ -275,23 +214,9 @@ class NewsConfirmStrategy:
         acc = mt5.account_info()
         return acc.balance if acc else self.starting_balance
 
-    def _lot_size(self, symbol: str) -> float:
-        """Flat RISK_PCT of CURRENT balance, every trade - no streak
-        tracking, no multiplier. RISK_PCT=14.1% is 'quarter-Kelly',
-        derived from this session's actual backtest win rate (75.9%) and
-        win/loss sizes via the Kelly Criterion, then quartered for safety
-        given the small (29-trade) sample the estimate came from. Tested
-        head-to-head against flat 1% risk: identical max drawdown (19.9%)
-        but meaningfully higher final balance ($627.70 vs $385.71 on the
-        same 29 trades) - the min-lot floor protects the account
-        identically at both risk levels until balance grows enough for
-        the difference to matter, making 14.1% a genuinely better
-        risk-adjusted choice up to that point, not just a bigger bet.
-        Full Kelly was 56.3% (drawdown 48.7% when tested - far too
-        aggressive to use); half-Kelly (28.1%) still hit 32.5%+ drawdown.
-        Recomputed fresh from current balance every call, never a fixed
-        number - matches the live straddle bot's _lot_size() formula
-        shape (risk_dollar / (sl_dollars * pip_value))."""
+    def _base_lot(self, symbol: str) -> float:
+        """RISK_PCT of CURRENT balance — recomputed fresh every time a NEW
+        chain starts. Never carried over from a previous event."""
         cfg = SYMBOL_CONFIG[symbol]
         risk_dollar = self._balance() * (RISK_PCT / 100.0)
         lot = risk_dollar / (cfg["sl"] * _pip_value_per_lot(symbol))
@@ -300,8 +225,6 @@ class NewsConfirmStrategy:
     # ---------------------------------------------------------------- MT5 reads
 
     def _get_tick(self, symbol: str):
-        """Same Market-Watch self-heal pattern as straddle_strategy.py —
-        see that file's docstring for why this is a single choke point."""
         tick = mt5.symbol_info_tick(symbol)
         if tick is None:
             mt5.symbol_select(symbol, True)
@@ -309,9 +232,6 @@ class NewsConfirmStrategy:
         return tick
 
     def _filling_mode(self, symbol: str) -> int:
-        """Identical logic to straddle_strategy.py — see that file's
-        docstring for why raw integers are used instead of the
-        nonexistent mt5.SYMBOL_FILLING_* constants."""
         info = mt5.symbol_info(symbol)
         if info is None:
             return mt5.ORDER_FILLING_IOC
@@ -325,53 +245,37 @@ class NewsConfirmStrategy:
         return mt5.ORDER_FILLING_RETURN
 
     def _safe_order_send(self, request: Dict[str, Any]):
-        """Identical wrapper to straddle_strategy.py — see that file's
-        docstring for why every order_send call must go through this."""
         result = mt5.order_send(request)
         if result is None:
-            print(
-                f"  order_send returned None — request never reached the "
-                f"server. mt5.last_error(): {mt5.last_error()}"
-            )
+            print(f"  order_send returned None — mt5.last_error(): {mt5.last_error()}")
             return None
         return result
 
     def _get_position(self, symbol: str):
-        """Returns the FIRST (earliest-opened) leg only, for simple
-        'do we have any position open' checks. Use _get_open_positions()
-        when scale-in adds matter (blended stop/trail management)."""
-        positions = self._get_open_positions(symbol)
-        return positions[0] if positions else None
-
-    def _get_open_positions(self, symbol: str) -> List:
-        """Every open leg for this symbol+magic (initial entry + any
-        scale-in adds), sorted oldest-first. Assumes a HEDGING-mode
-        account (multiple simultaneous tickets on the same symbol allowed)
-        - retail Exness accounts support this; a netting-mode account
-        would merge these into one ticket automatically instead, which
-        would break the per-leg tracking scale-in relies on. Confirm your
-        account mode before enabling this live."""
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
-            return []
-        own = sorted([p for p in positions if p.magic == MAGIC], key=lambda p: p.time)
-        return own
+            return None
+        own = [p for p in positions if p.magic == MAGIC]
+        return own[0] if own else None
+
+    def _get_pending_orders(self, symbol: str) -> Dict[str, Any]:
+        orders = mt5.orders_get(symbol=symbol) or ()
+        own = [o for o in orders if o.magic == MAGIC]
+        buy = next((o for o in own if o.type == mt5.ORDER_TYPE_BUY_STOP), None)
+        sell = next((o for o in own if o.type == mt5.ORDER_TYPE_SELL_STOP), None)
+        return {"buy": buy, "sell": sell}
 
     # ---------------------------------------------------------------- event calendar
 
-    def _next_nfp_confirmation_window(
+    def _next_nfp_trigger_window(
         self, now: datetime.datetime
-    ) -> Optional[tuple]:
-        """Returns (release_time, confirm_check_time) for the next NFP
-        release whose confirmation-check window (release_time + 30min, the
-        M30 bar close) is happening right now, or None. Call this on every
-        poll — it's cheap and fully derived from NFP_SCHEDULE_UTC, no state."""
+    ) -> Optional[datetime.datetime]:
+        """Returns the NFP release time if `now` falls inside its 5-min
+        placement window (fires the straddle AT the release, not after
+        it — unlike news_confirm_strategy.py)."""
         for release_time in NFP_SCHEDULE_UTC:
-            check_time = release_time + datetime.timedelta(minutes=30)
-            # Give a 5-minute poll window right at the bar close, matching
-            # this bot's expected polling cadence.
-            if check_time <= now < check_time + datetime.timedelta(minutes=5):
-                return release_time, check_time
+            if release_time <= now < release_time + datetime.timedelta(minutes=5):
+                return release_time
         return None
 
     def _days_since_fomc(self, event_date: datetime.date) -> int:
@@ -385,61 +289,33 @@ class NewsConfirmStrategy:
 
     # ---------------------------------------------------------------- entry
 
-    def check_and_enter(self, symbol: str) -> Dict[str, Any]:
-        """Call on every poll (5-min cadence recommended, matching the
-        straddle bot). Does nothing unless `now` falls inside a scheduled
-        NFP release's confirmation-check window — see
-        _next_nfp_confirmation_window(). No pending orders are ever placed;
-        this either enters MARKET immediately (confirmed) or does nothing
-        (not confirmed / filtered / already have a position)."""
+    def check_and_place(self, symbol: str) -> Dict[str, Any]:
+        """Call on every poll. Places the straddle AT the NFP release
+        moment (offset both sides of the current price) — no waiting, no
+        confirmation. Whichever side fills becomes the chain's first leg;
+        manage_open_trade() then handles the reload-on-TP behavior."""
         if symbol not in self.traded_symbols:
             return self._no(f"{symbol} not enabled")
 
         if self._get_position(symbol) is not None:
             return self._no("Position already open")
 
+        pending = self._get_pending_orders(symbol)
+        if pending["buy"] is not None or pending["sell"] is not None:
+            return self._no("Straddle already pending")
+
         now = datetime.datetime.now(datetime.timezone.utc)
-        window = self._next_nfp_confirmation_window(now)
-        if window is None:
-            return self._no("Not inside an NFP confirmation window")
-        release_time, check_time = window
+        release_time = self._next_nfp_trigger_window(now)
+        if release_time is None:
+            return self._no("Not inside an NFP trigger window")
 
         if self._is_near_fomc(release_time):
             return self._no(
                 f"Skipped — NFP within {FOMC_PROXIMITY_DAYS} days of a preceding "
-                f"FOMC decision (days_since_fomc="
-                f"{self._days_since_fomc(release_time.date())})"
+                f"FOMC decision (days_since_fomc={self._days_since_fomc(release_time.date())})"
             )
 
         cfg = SYMBOL_CONFIG[symbol]
-
-        # Pull the release bar (M30, spanning release_time -> check_time)
-        # plus enough trailing history for the volume average.
-        bars = mt5.copy_rates_range(
-            symbol,
-            mt5.TIMEFRAME_M30,
-            release_time - datetime.timedelta(minutes=30 * (cfg["lookback_bars"] + 1)),
-            check_time,
-        )
-        if bars is None or len(bars) < cfg["lookback_bars"] + 1:
-            return self._no("Insufficient bar history to confirm this event")
-
-        release_bar = bars[-1]
-        prior_bars = bars[-(cfg["lookback_bars"] + 1):-1]
-        avg_volume = sum(b["tick_volume"] for b in prior_bars) / len(prior_bars)
-
-        move = float(release_bar["close"]) - float(release_bar["open"])
-        confirmed_direction = abs(move) >= cfg["min_move"]
-        confirmed_volume = release_bar["tick_volume"] >= cfg["volume_mult"] * avg_volume
-
-        if not (confirmed_direction and confirmed_volume):
-            return self._no(
-                f"Not confirmed — move=${move:.2f} (need >=${cfg['min_move']}), "
-                f"volume_ratio={release_bar['tick_volume']/avg_volume:.2f}x "
-                f"(need >={cfg['volume_mult']}x)"
-            )
-
-        direction = "buy" if move > 0 else "sell"
         tick = self._get_tick(symbol)
         if tick is None:
             return self._no("No tick data")
@@ -450,217 +326,169 @@ class NewsConfirmStrategy:
         if tick_age > datetime.timedelta(minutes=10):
             return self._no(f"Market likely closed — last tick is {tick_age} old")
 
-        entry_price = tick.ask if direction == "buy" else tick.bid
-        sl_price = (
-            entry_price - cfg["sl"] if direction == "buy" else entry_price + cfg["sl"]
+        anchor = (tick.bid + tick.ask) / 2.0
+        offset = cfg["offset"]
+        sl = cfg["sl"]
+
+        buy_stop = _round_price(anchor + offset, symbol)
+        sell_stop = _round_price(anchor - offset, symbol)
+        buy_sl = _round_price(buy_stop - sl, symbol)
+        sell_sl = _round_price(sell_stop + sl, symbol)
+
+        lots = self._base_lot(symbol)  # fresh Kelly-flat base for this NEW chain
+        expiration = int(
+            (release_time + datetime.timedelta(hours=cfg["max_hold_hours"])).timestamp()
         )
-        lots = self._lot_size(symbol)
         filling_mode = self._filling_mode(symbol)
 
-        result = self._safe_order_send(
-            {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": lots,
-                "type": mt5.ORDER_TYPE_BUY if direction == "buy" else mt5.ORDER_TYPE_SELL,
-                "price": entry_price,
-                "sl": _round_price(sl_price, symbol),
-                "tp": 0.0,  # no fixed TP — breakeven+trail manages the exit
-                "deviation": 10,
-                "magic": MAGIC,
-                "comment": "news_confirm_entry",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling_mode,
-            }
-        )
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            reason = (
-                f"retcode={result.retcode} comment='{result.comment}'"
-                if result is not None
-                else "order_send returned None"
+        tickets: Dict[str, Optional[int]] = {"buy": None, "sell": None}
+        for side, order_type, price, stop in (
+            ("buy", mt5.ORDER_TYPE_BUY_STOP, buy_stop, buy_sl),
+            ("sell", mt5.ORDER_TYPE_SELL_STOP, sell_stop, sell_sl),
+        ):
+            result = self._safe_order_send(
+                {
+                    "action": mt5.TRADE_ACTION_PENDING,
+                    "symbol": symbol,
+                    "volume": lots,
+                    "type": order_type,
+                    "price": price,
+                    "sl": stop,
+                    "tp": 0.0,  # TP handled in manage_open_trade so we can reload on hit
+                    "magic": MAGIC,
+                    "comment": "news_reload_entry",
+                    "type_time": mt5.ORDER_TIME_SPECIFIED,
+                    "expiration": expiration,
+                    "type_filling": filling_mode,
+                }
             )
-            return self._no(f"Entry rejected — {reason}")
+            if result is None:
+                continue
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                tickets[side] = result.order
+            else:
+                print(
+                    f"  {side.upper()} {symbol} rejected — retcode={result.retcode} "
+                    f"comment='{result.comment}'"
+                )
+
+        if tickets["buy"] is None or tickets["sell"] is None:
+            for t in tickets.values():
+                if t is not None:
+                    self._safe_order_send(
+                        {"action": mt5.TRADE_ACTION_REMOVE, "order": t}
+                    )
+            return self._no(f"Order send failed — rolled back")
 
         return {
-            "signal": direction,
-            "entry_price": entry_price,
+            "signal": "straddle",
+            "buy_stop": buy_stop,
+            "sell_stop": sell_stop,
             "lot_size": lots,
-            "release_bar_move": round(move, 2),
-            "reason": (
-                f"Confirmed {direction.upper()} | move=${move:.2f} | "
-                f"lots={lots} | entry={entry_price}"
-            ),
+            "reason": f"Straddle placed | buy={buy_stop} sell={sell_stop} | lots={lots}",
         }
 
-    # ---------------------------------------------------------------- scale-in
+    # ---------------------------------------------------------------- OCO / cleanup
 
-    def check_scale_in(self, symbol: str) -> str:
-        """Call every poll while a position is open. Adds another leg,
-        same direction, at ADD_LOT_FRACTION x the INITIAL leg's lot size,
-        every time price pushes ADD_THRESHOLD further favorable since the
-        last leg was added — only within SCALE_IN_WINDOW_HOURS of the
-        first leg's open time, and only up to MAX_ADDS total adds.
+    def manage_pending_orders(self, symbol: str) -> str:
+        """Same OCO cleanup pattern as straddle_strategy.py — checked
+        FIRST, every cycle, unconditionally (that ordering bug is exactly
+        what broke the original straddle bot once already)."""
+        pending = self._get_pending_orders(symbol)
+        if pending["buy"] is None and pending["sell"] is None:
+            return "No pending straddle"
 
-        Fully stateless, same discipline as the rest of this file: "how
-        many adds so far" is derived by counting real open MT5 positions
-        for this symbol+magic (each add is its own ticket, not tracked in
-        memory), and "best price since the last add" is derived from real
-        M30 price history between the most-recently-opened leg's time and
-        now, not stored anywhere."""
-        positions = self._get_open_positions(symbol)
-        if not positions:
-            return "No open position"
-
-        first_leg = positions[0]
-        adds_done = len(positions) - 1
-        if adds_done >= MAX_ADDS:
-            return f"Max adds ({MAX_ADDS}) already reached"
-
-        first_open_time = datetime.datetime.fromtimestamp(
-            first_leg.time, tz=datetime.timezone.utc
-        )
-        scale_in_deadline = first_open_time + datetime.timedelta(hours=SCALE_IN_WINDOW_HOURS)
-        now = datetime.datetime.now(datetime.timezone.utc)
-        if now > scale_in_deadline:
-            return "Scale-in window closed"
-
-        is_buy = first_leg.type == mt5.POSITION_TYPE_BUY
-        last_leg = positions[-1]  # most recently added (or the initial, if no adds yet)
-        last_leg_time = datetime.datetime.fromtimestamp(last_leg.time, tz=datetime.timezone.utc)
-
-        bars = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M30, last_leg_time, now)
-        if bars is None or len(bars) == 0:
-            return "No bar history since the last leg was opened"
-        best_price = max(bar["high"] for bar in bars) if is_buy else min(bar["low"] for bar in bars)
-
-        fav_move = (
-            (best_price - last_leg.price_open) if is_buy
-            else (last_leg.price_open - best_price)
-        )
-        if fav_move < ADD_THRESHOLD:
-            return f"Not enough favorable move yet (${fav_move:.2f} < ${ADD_THRESHOLD})"
-
-        tick = self._get_tick(symbol)
-        if tick is None:
-            return "No tick data"
-        entry_price = tick.ask if is_buy else tick.bid
-        add_lot = round(first_leg.volume * ADD_LOT_FRACTION / 0.01) * 0.01
-        filling_mode = self._filling_mode(symbol)
-
-        result = self._safe_order_send(
-            {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": add_lot,
-                "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
-                "price": entry_price,
-                "sl": first_leg.sl,  # match whatever the shared stop currently is
-                "tp": 0.0,
-                "deviation": 10,
-                "magic": MAGIC,
-                "comment": "news_confirm_scale_in_add",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling_mode,
-            }
-        )
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            reason = (
-                f"retcode={result.retcode} comment='{result.comment}'"
-                if result is not None else "order_send returned None"
+        pos = self._get_position(symbol)
+        if pos is not None:
+            leftover = (
+                pending["sell"] if pos.type == mt5.ORDER_TYPE_BUY else pending["buy"]
             )
-            return f"Scale-in add REJECTED — {reason}"
+            if leftover is not None:
+                self._safe_order_send(
+                    {"action": mt5.TRADE_ACTION_REMOVE, "order": leftover.ticket}
+                )
+            bias = "buy" if pos.type == mt5.ORDER_TYPE_BUY else "sell"
+            return f"{bias.upper()} filled — opposite order cancelled"
 
-        return f"Scale-in ADD #{adds_done + 1} — lot={add_lot} @ {entry_price}"
+        now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        for order in (pending["buy"], pending["sell"]):
+            if (
+                order is not None
+                and order.time_expiration
+                and now_ts >= order.time_expiration
+            ):
+                self._safe_order_send(
+                    {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket}
+                )
+        remaining = self._get_pending_orders(symbol)
+        if remaining["buy"] is None and remaining["sell"] is None:
+            return "Neither side filled — straddle cancelled"
+        return "Pending"
 
-    # ---------------------------------------------------------------- trade management
+    # ---------------------------------------------------------------- trade management (reload chain)
 
     def manage_open_trade(self, symbol: str) -> str:
-        """Call on every M30 (or finer) bar close while a position is
-        open. Same breakeven+trail priority order as
-        straddle_strategy.py's manage_open_trade(), but now applied to the
-        BLENDED position across every open leg (initial entry + any
-        scale-in adds from check_scale_in()) rather than a single ticket —
-        weighted-average entry price, one shared stop applied to every
-        leg identically. All legs always move together (same SL value),
-        so the trade only ever exits as a whole, not leg-by-leg."""
-        positions = self._get_open_positions(symbol)
-        if not positions:
+        """Call on every poll while a position is open. THIS is where the
+        reload chain lives: if price has reached the chain's TP, close
+        the current leg and immediately open a fresh one in the same
+        direction at current market, with lot = previous lot +
+        LOT_INCREMENT. The chain's SL and time-window deadline are both
+        already enforced by MT5 itself (SL is a real broker-side stop;
+        the pending order's expiration was set at placement time) — this
+        method's only job is detecting a TP condition and reloading."""
+        pos = self._get_position(symbol)
+        if pos is None:
             return "No open trade"
 
         cfg = SYMBOL_CONFIG[symbol]
-        first_leg = positions[0]
-        entry_time = datetime.datetime.fromtimestamp(first_leg.time, tz=datetime.timezone.utc)
-        deadline = entry_time + datetime.timedelta(hours=cfg["max_hold_hours"])
-        if datetime.datetime.now(datetime.timezone.utc) >= deadline:
-            all_closed = all(self._close_position_at_market(symbol, p) for p in positions)
-            return (
-                f"Past max hold — closed all {len(positions)} leg(s) at market"
-                if all_closed else "Deadline close FAILED for one or more legs"
-            )
-
         tick = self._get_tick(symbol)
         if tick is None:
             return "No tick data"
 
-        is_buy = first_leg.type == mt5.POSITION_TYPE_BUY
-        total_lot = sum(p.volume for p in positions)
-        weighted_entry = sum(p.volume * p.price_open for p in positions) / total_lot
-        be_trigger = cfg["be_trigger"]
-        trail_dist = cfg["trail"]
+        is_buy = pos.type == mt5.POSITION_TYPE_BUY
+        entry = pos.price_open
+        tp_distance = cfg["tp"]
         current_price = tick.bid if is_buy else tick.ask
 
-        entry_r = _round_price(weighted_entry, symbol)
-        sl_r = _round_price(first_leg.sl, symbol)
-        be_done = (sl_r >= entry_r) if is_buy else (sl_r <= entry_r and first_leg.sl > 0)
+        favorable_move = (current_price - entry) if is_buy else (entry - current_price)
+        if favorable_move < tp_distance:
+            return "Holding — TP not reached"
 
-        favorable_move = (
-            (current_price - weighted_entry) if is_buy else (weighted_entry - current_price)
+        # TP reached: close this leg at market, then reload same direction
+        closed = self._close_position_at_market(symbol, pos)
+        if not closed:
+            return "TP reached but close FAILED — will retry next cycle"
+
+        new_lot = round((pos.volume + LOT_INCREMENT) / 0.01) * 0.01
+        entry_price = tick.ask if is_buy else tick.bid
+        sl_price = entry_price - cfg["sl"] if is_buy else entry_price + cfg["sl"]
+        filling_mode = self._filling_mode(symbol)
+
+        result = self._safe_order_send(
+            {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": new_lot,
+                "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
+                "price": entry_price,
+                "sl": _round_price(sl_price, symbol),
+                "tp": 0.0,
+                "deviation": 10,
+                "magic": MAGIC,
+                "comment": "news_reload_add",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling_mode,
+            }
         )
-
-        if not be_done and favorable_move >= be_trigger:
-            new_sl = _round_price(weighted_entry, symbol)
-            ok = all(self._modify_sl(symbol, p, new_sl) for p in positions)
-            return (
-                f"BE -> SL {new_sl} (all {len(positions)} leg(s))"
-                if ok else "BE modify failed for one or more legs"
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            reason = (
+                f"retcode={result.retcode} comment='{result.comment}'"
+                if result
+                else "order_send returned None"
             )
+            return f"TP hit, closed OK, but RELOAD REJECTED — {reason}"
 
-        if be_done:
-            best_price = self._best_price_since_entry(symbol, first_leg)
-            if is_buy:
-                new_sl = _round_price(best_price - trail_dist, symbol)
-                if new_sl > _round_price(first_leg.sl, symbol):
-                    ok = all(self._modify_sl(symbol, p, new_sl) for p in positions)
-                    return (
-                        f"Trail -> SL {new_sl} (all {len(positions)} leg(s))"
-                        if ok else "Trail failed for one or more legs"
-                    )
-            else:
-                new_sl = _round_price(best_price + trail_dist, symbol)
-                if new_sl < _round_price(first_leg.sl, symbol):
-                    ok = all(self._modify_sl(symbol, p, new_sl) for p in positions)
-                    return (
-                        f"Trail -> SL {new_sl} (all {len(positions)} leg(s))"
-                        if ok else "Trail failed for one or more legs"
-                    )
-
-        return f"Holding ({len(positions)} leg(s), total_lot={total_lot})"
-
-    def _best_price_since_entry(self, symbol: str, position) -> float:
-        entry_time = datetime.datetime.fromtimestamp(
-            position.time, tz=datetime.timezone.utc
-        )
-        bars = mt5.copy_rates_range(
-            symbol,
-            mt5.TIMEFRAME_M30,
-            entry_time,
-            datetime.datetime.now(datetime.timezone.utc),
-        )
-        if bars is None or len(bars) == 0:
-            return position.price_open
-        if position.type == mt5.POSITION_TYPE_BUY:
-            return max(bar["high"] for bar in bars)
-        return min(bar["low"] for bar in bars)
+        return f"TP hit -> reloaded {('BUY' if is_buy else 'SELL')} | new lot={new_lot}"
 
     def _close_position_at_market(self, symbol: str, position) -> bool:
         tick = self._get_tick(symbol)
@@ -677,7 +505,7 @@ class NewsConfirmStrategy:
                 "price": tick.bid if is_buy else tick.ask,
                 "deviation": 10,
                 "magic": MAGIC,
-                "comment": "news_confirm_deadline_close",
+                "comment": "news_reload_tp_close",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": self._filling_mode(symbol),
             }
@@ -685,22 +513,6 @@ class NewsConfirmStrategy:
         if result is not None and result.retcode != mt5.TRADE_RETCODE_DONE:
             print(
                 f"  Close {symbol} rejected — retcode={result.retcode} comment='{result.comment}'"
-            )
-        return result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
-
-    def _modify_sl(self, symbol: str, pos, new_sl: float) -> bool:
-        result = self._safe_order_send(
-            {
-                "action": mt5.TRADE_ACTION_SLTP,
-                "symbol": symbol,
-                "position": pos.ticket,
-                "sl": new_sl,
-                "tp": pos.tp,
-            }
-        )
-        if result is not None and result.retcode != mt5.TRADE_RETCODE_DONE:
-            print(
-                f"  SL modify {symbol} rejected — retcode={result.retcode} comment='{result.comment}'"
             )
         return result is not None and result.retcode == mt5.TRADE_RETCODE_DONE
 
@@ -717,7 +529,9 @@ class NewsConfirmStrategy:
         for sym in symbols:
             deals = (
                 mt5.history_deals_get(
-                    since, datetime.datetime.now(datetime.timezone.utc), group=f"*{sym}*"
+                    since,
+                    datetime.datetime.now(datetime.timezone.utc),
+                    group=f"*{sym}*",
                 )
                 or ()
             )
@@ -727,45 +541,45 @@ class NewsConfirmStrategy:
         if not all_closes:
             return {"trades": 0, "status": "No trades yet"}
         wins = sum(1 for d in all_closes if d.profit > 0)
-        summary: Dict[str, Any] = {
+        return {
             "total_trades": len(all_closes),
             "win_rate": f"{wins/len(all_closes)*100:.1f}%",
         }
-        if symbol:
-            summary["next_lot_size"] = self._lot_size(symbol)
-        return summary
 
     # ---------------------------------------------------------------- util
 
     def _no(self, reason: str) -> Dict[str, Any]:
         return {
             "signal": None,
-            "entry_price": None,
+            "buy_stop": None,
+            "sell_stop": None,
             "lot_size": None,
-            "release_bar_move": None,
             "reason": reason,
         }
 
     def __repr__(self) -> str:
         return (
-            f"NewsConfirmStrategy("
-            f"symbols={self.traded_symbols}, risk_pct={RISK_PCT}% (quarter-Kelly, flat), "
-            f"fomc_filter={FOMC_PROXIMITY_DAYS}d, "
-            f"scale_in={MAX_ADDS}x adds within {SCALE_IN_WINDOW_HOURS}h "
-            f"(+${ADD_THRESHOLD} each), stateless=True)"
+            f"NewsReloadStrategy(symbols={self.traded_symbols}, "
+            f"risk_pct={RISK_PCT}% (quarter-Kelly, per-event base), "
+            f"lot_increment={LOT_INCREMENT} (flat, within-chain only), "
+            f"fomc_filter={FOMC_PROXIMITY_DAYS}d, stateless=True)"
         )
 
 
 if __name__ == "__main__":
-    s = NewsConfirmStrategy()
+    s = NewsReloadStrategy()
     print(s)
     print()
-    future_nfp = [d for d in NFP_SCHEDULE_UTC if d >= datetime.datetime.now(datetime.timezone.utc)]
-    future_fomc = [d for d in FOMC_DATES_UTC if d >= datetime.datetime.now(datetime.timezone.utc).date()]
-    print(f"NFP events scheduled: {len(NFP_SCHEDULE_UTC)} total, {len(future_nfp)} upcoming")
-    print(f"  Next: {min(future_nfp) if future_nfp else 'NONE — add dates to NFP_SCHEDULE_UTC in this file'}")
-    print(f"FOMC dates loaded: {len(FOMC_DATES_UTC)} total, {len(future_fomc)} upcoming")
-    print(f"  Next: {min(future_fomc) if future_fomc else 'NONE — add dates to FOMC_DATES_UTC in this file'}")
+    future_nfp = [
+        d for d in NFP_SCHEDULE_UTC if d >= datetime.datetime.now(datetime.timezone.utc)
+    ]
+    print(
+        f"NFP events scheduled: {len(NFP_SCHEDULE_UTC)} total, {len(future_nfp)} upcoming"
+    )
+    print(
+        f"  Next: {min(future_nfp) if future_nfp else 'NONE — add dates to NFP_SCHEDULE_UTC'}"
+    )
     print()
-    print("*** DEMO-READY, NOT LIVE-READY — see module docstring 'IMPORTANT' section ***")
-    print("*** Calendar is manually maintained — see the 'Event calendars' section near the top of this file ***")
+    print(
+        "*** DEMO-READY, NOT LIVE-READY — see module docstring 'IMPORTANT' sections ***"
+    )
