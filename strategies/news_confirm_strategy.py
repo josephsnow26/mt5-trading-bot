@@ -73,6 +73,23 @@ demo-only, to accumulate real forward evidence, until it's been checked
 against data it was never tuned on.
 
 CHANGE LOG (this revision):
+  - Fixed a real gap: manage_open_trade() now force-closes a chain at
+    the 8h max_hold_hours deadline, derived statelessly from the event
+    calendar (see _current_chain_release_time()). Previously,
+    max_hold_hours only bounded the PRE-fill pending-order expiration —
+    once a position was open and reloading, nothing ever closed it.
+    Backtested numbers already assumed this force-close happens (4 of 40
+    historical chains hit it, including the single largest winning chain
+    in the dataset) — this revision makes the live code match that.
+  - Polling moved to every 1 minute (main_news_reload.py), down from 5.
+    A reload chain can move $6+ between polls; at 5-min polling, a fast
+    move could skip past several $6 reload steps in one gap instead of
+    triggering them individually, diverging from what was backtested
+    (which assumes each $6 increment is caught). 1-min polling keeps live
+    behavior closer to the backtest's assumption of near-immediate
+    detection.
+
+CHANGE LOG (initial):
   - Initial build. Separate MAGIC number and separate process from both
     straddle_strategy.py AND news_confirm_strategy.py — three genuinely
     different mechanics, each standalone, matching this project's
@@ -267,6 +284,26 @@ class NewsReloadStrategy:
 
     # ---------------------------------------------------------------- event calendar
 
+    def _current_chain_release_time(self) -> Optional[datetime.datetime]:
+        """The chain's ORIGINAL NFP release time, needed to enforce the
+        8-hour max_hold_hours deadline on an open/reloading position.
+        Can't just read pos.time — every reload closes the old position
+        and opens a brand new one via TRADE_ACTION_DEAL, so an open
+        position's own .time only reflects its most recent reload, not
+        the event that started the chain. Instead, this derives it from
+        the calendar itself: the most recent NFP release within the last
+        24 hours (comfortably longer than max_hold_hours) must be the
+        event this chain belongs to, since a chain only ever opens right
+        at a release and the whole strategy only trades once per event.
+        Fully stateless — nothing stored, just calendar + current time."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        candidates = [
+            t
+            for t in NFP_SCHEDULE_UTC
+            if t <= now and (now - t) <= datetime.timedelta(hours=24)
+        ]
+        return max(candidates) if candidates else None
+
     def _next_nfp_trigger_window(
         self, now: datetime.datetime
     ) -> Optional[datetime.datetime]:
@@ -428,19 +465,53 @@ class NewsReloadStrategy:
     # ---------------------------------------------------------------- trade management (reload chain)
 
     def manage_open_trade(self, symbol: str) -> str:
-        """Call on every poll while a position is open. THIS is where the
-        reload chain lives: if price has reached the chain's TP, close
-        the current leg and immediately open a fresh one in the same
-        direction at current market, with lot = previous lot +
-        LOT_INCREMENT. The chain's SL and time-window deadline are both
-        already enforced by MT5 itself (SL is a real broker-side stop;
-        the pending order's expiration was set at placement time) — this
-        method's only job is detecting a TP condition and reloading."""
+        """Call on every poll while a position is open. Priority order:
+          1. Past the chain's 8h deadline (from the ORIGINAL release, not
+             this leg's own open time) -> force-close at market,
+             regardless of whether the chain is winning or losing right
+             now. This is what actually defines the strategy as an
+             NFP-reaction bet rather than an open-ended trend-follow —
+             see module docstring's 'why 8 hours' note. Backtested: 4 of
+             40 historical chains hit this boundary, including the
+             single largest winning chain in the whole dataset (June 5
+             2026, +$12,059.68) — the backtest numbers already assume
+             this force-close happens, so it needs to be real here too.
+          2. TP reached -> close this leg, reload same direction at lot +
+             LOT_INCREMENT.
+          3. Otherwise -> hold. (SL itself is a real broker-side stop,
+             enforced by MT5 on every tick regardless of polling — this
+             method never needs to check for it directly.)
+
+        NOTE: an earlier revision of this file relied on the pending
+        order's own `expiration` to bound total risk time, which only
+        covers the PRE-fill waiting phase — once a position was open and
+        reloading, nothing ever forced it closed. That gap is fixed here."""
         pos = self._get_position(symbol)
         if pos is None:
             return "No open trade"
 
         cfg = SYMBOL_CONFIG[symbol]
+
+        release_time = self._current_chain_release_time()
+        if release_time is not None:
+            deadline = release_time + datetime.timedelta(hours=cfg["max_hold_hours"])
+            if datetime.datetime.now(datetime.timezone.utc) >= deadline:
+                closed = self._close_position_at_market(symbol, pos)
+                return (
+                    f"Past {cfg['max_hold_hours']}h max hold — chain force-closed at market"
+                    if closed
+                    else "Force-close FAILED — will retry next cycle"
+                )
+        else:
+            # Shouldn't normally happen (a position only exists because a
+            # recent release triggered it) — flagged loudly rather than
+            # silently skipping the deadline check.
+            print(
+                f"  WARNING: {symbol} has an open position but no NFP release "
+                f"found in the last 24h — can't enforce the max-hold deadline "
+                f"this cycle. Check NFP_SCHEDULE_UTC."
+            )
+
         tick = self._get_tick(symbol)
         if tick is None:
             return "No tick data"
