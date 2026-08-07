@@ -9,6 +9,65 @@ intervention.
 
 ---
 
+## ⚠️ Concurrent Operation — Read Before Running
+
+This strategy does **not** run alone on the account. As of 2026-08-07, four other
+strategies are live or in active demo testing, each as its own standalone process:
+
+| Strategy | File | MAGIC | Symbols |
+|----------|------|-------|---------|
+| Straddle (daily) | `straddle_strategy.py` | `20260716` | EURUSDm, USDJPYm, GBPUSDm, XAUUSDm, BTCUSDm |
+| News Confirm | `news_confirm_strategy.py` | `20260801` | XAUUSDm |
+| News Reload | `news_reload_strategy.py` | `20260810` | XAUUSDm |
+| News Spike | `news_spike_strategy.py` | `20260807` | XAUUSDm (NFP/CPI/FOMC) |
+| **Monthly Trend** | *(this strategy)* | **`??? — not yet documented, see below`** | EURUSDm, USDJPYm |
+
+### 🔴 Direct symbol overlap with the straddle bot — the one that actually matters
+
+The three news strategies only ever touch XAUUSDm, so they have zero overlap with
+this strategy. **`straddle_strategy.py` is different — it trades EURUSDm and
+USDJPYm too, the exact same two pairs this strategy trades.** That means on any
+given day, it's entirely possible for the straddle bot and this strategy to both
+have an open position on EURUSDm (or USDJPYm) **at the same time**, from two
+completely independent decision processes.
+
+This needs three things to be true before it's safe to run both together:
+
+**1. This strategy MUST have its own unique MAGIC number**, different from
+`20260716`, `20260801`, `20260807`, and `20260810`. The current version of this
+README doesn't state one — if the actual code doesn't set a unique `MAGIC` and
+filter every position/order read by it (the same pattern every other strategy in
+this project uses — see `straddle_strategy.py`'s `_get_position()` for the
+reference implementation), fix that in code before running this alongside the
+straddle bot, not just in this document.
+
+**2. The MT5 account MUST be in hedging mode, not netting mode.** In netting mode,
+MT5 allows only ONE position per symbol per account, full stop — regardless of
+magic number. If both this strategy and the straddle bot tried to hold independent
+positions on EURUSDm at the same time under netting, MT5 would merge them into a
+single net position, and BOTH strategies' own SL/trail/sizing logic would silently
+operate on the wrong thing. This is not a reporting quirk — it would actively
+corrupt both strategies' actual risk management. Confirm the account mode before
+enabling this strategy live or on demo alongside the straddle bot.
+
+**3. Combined risk exposure is not automatically managed.** Each strategy sizes
+its own positions independently off the current account balance — this strategy
+targets 1% risk per trade (see Position Sizing below), and the straddle bot
+targets its own 1% risk per trade on the same pairs. Neither strategy is aware of
+the other's open risk. In the worst case (both fire on the same pair on the same
+day), realized risk on that one pair could be closer to ~2% of the account, not
+the 1% either strategy's own math assumes in isolation. Worth being deliberate
+about this rather than assuming it's handled — it isn't, by either strategy.
+
+### What's genuinely fine, no action needed
+- No overlap at all with the three news strategies (XAUUSDm only) — this
+  strategy never touches gold.
+- Each strategy is fully stateless and reads MT5 directly (positions, orders,
+  deal history) — none of them share any in-memory state, so a crash or restart
+  in one doesn't corrupt another, regardless of the symbol-overlap question above.
+
+---
+
 ## 📌 Strategy Overview
 
 - Prior month candle direction sets the trade bias for the entire month
@@ -54,6 +113,13 @@ Trail settings: trigger at 1R, trail 20 pips after BE.
 | NY overlap | 13:00–14:00 | 14:00–15:00 |
 
 **Week of month:** Day 1–7 = Week 1, Day 8–14 = Week 2, Day 15+ = no trade.
+
+**Note on the straddle bot's own EURUSDm/USDJPYm trigger hours (08:00 UTC for
+both):** this strategy's London-open window (07:00–08:00 UTC) sits directly
+adjacent to that. Worth being aware that on any Mon–Thu in Week 1–2 of the
+month, both strategies could be evaluating entries on the same pair within
+roughly the same hour — not a bug in either one, just a real timing proximity
+worth knowing about given the overlap already flagged above.
 
 ---
 
@@ -107,6 +173,11 @@ Resets automatically on the 1st of each new month.
 Tracks last 6 trades across all symbols. If fewer than 2 wins in the last 6,
 strategy pauses all entries until the win rate recovers.
 
+**Note:** both of these protections are scoped to THIS strategy's own trades
+only (filtered by its own MAGIC number, once that's added — see the
+Concurrent Operation section above). They cannot see or react to the straddle
+bot's win/loss streaks on the same pairs, and vice versa.
+
 ---
 
 ## 💰 Position Sizing
@@ -116,7 +187,9 @@ lot = (balance × risk_pct%) / (sl_pips × pip_value_per_lot)
 minimum lot = 0.01
 ```
 
-Default risk: **1% per trade**. One position per symbol at a time.
+Default risk: **1% per trade**. One position per symbol at a time **for this
+strategy** — this does not account for a simultaneous straddle-bot position on
+the same symbol; see Concurrent Operation above.
 
 At $9 account: expect $3–10 loss / $6–30 gain per trade at 0.01 lots.
 At $100 account: lot sizing formula kicks in properly.
@@ -213,3 +286,16 @@ No external data needed. Pass only the symbol.
 - GBPUSD, EURJPY, CADJPY all failed — monthly bias WR too low on those pairs.
 - Nov–Dec dead months. Mar, Apr, Jun strongest (+420p, +505p, +439p on EURUSD).
 - USDJPY Week 1 strongest single window across all tests (+3,541p net).
+
+---
+
+## 📋 Before Enabling Alongside the Straddle Bot — Checklist
+
+- [ ] Confirm this strategy's actual `.py` code has a unique `MAGIC` number
+      (not `20260716`, `20260801`, `20260807`, or `20260810`), and every
+      position/order read is filtered by it
+- [ ] Confirm the MT5 account is in **hedging mode**, not netting mode
+- [ ] Be aware combined risk on EURUSDm/USDJPYm can reach ~2% on days both
+      strategies fire, not the 1% either one assumes alone
+- [ ] Each strategy still runs as its own separate process/terminal — no
+      shared loop, matching every other strategy in this project

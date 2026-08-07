@@ -1,114 +1,108 @@
 """
-News Reload Strategy — Live Version (stateless)
-=================================================
-Edge   : Pre-positioned straddle placed directly at the NFP release itself
-         (unlike news_confirm_strategy.py, which deliberately waits for
-         the release to happen first). Whichever side fills first is the
-         trade. A TIGHT take-profit ($6) closes it, and every TP hit
-         immediately reloads the SAME direction at a bigger lot — the
-         chain keeps going as long as it keeps winning ("momentum"),
-         until either a stop-loss hit ends it or a fixed time window
-         elapses, whichever comes first.
+News Spike Strategy — Live Version (stateless)
+================================================
+Edge   : Straddle-at-release entry (same OCO pattern as
+         news_reload_strategy.py), but radically simplified on the exit
+         side: NO take-profit, NO reload chain. Once a position opens, it
+         gets a HARD 1-MINUTE force-close — win or lose, whatever it's
+         worth at that moment, it closes. After that single close (or an
+         SL hit, if that happens first), this specific event is DONE —
+         no re-entry, no matter how much time is left in the trigger
+         window.
 
-Entry  : Buy-stop + sell-stop straddle at each event, offset=$5 from the
-         anchor price (this file), whichever side fills is the trade —
-         same OCO idea as straddle_strategy.py, but tight TP=$6/SL=$5
-         instead of a trail, and reload-on-TP instead of one static
-         position.
-Sizing : Base lot for EACH NEW event = 14.1% "quarter-Kelly" of CURRENT
-         balance (identical formula/derivation to news_confirm_strategy.py
-         — see that file's docstring for the full Kelly derivation). This
-         is recalculated fresh every event, NOT carried over from the
-         previous event — a bad month never penalizes the next one, and a
-         good month doesn't inflate it either, beyond the balance itself
-         having grown or shrunk.
-         WITHIN one event's chain: every TP-hit reload adds a flat
-         LOT_INCREMENT (0.04) to the current lot. No reset until the
-         chain itself ends (SL hit or window elapsed) — this is
-         deliberately NOT a Kelly/percentage-based reload, just a flat
-         step, chosen after comparing 0.04/0.05/0.07 head to head (see
-         backtest summary below).
-Filter : Same FOMC-proximity filter as news_confirm_strategy.py — skip
-         any NFP event within FOMC_PROXIMITY_DAYS of a preceding FOMC
-         decision.
+         The idea: capture only the very first, immediate reaction to a
+         scheduled release, then get out before a possible reversal —
+         rather than staying in the market and riding it (which hurt
+         other mechanics tested this session: the 2026-03-06 NFP
+         reversal, and the 2024-12-06 NFP bar that spiked $12+ and then
+         round-tripped almost all the way back to flat within 30 min).
+         One shot per event, then done.
 
-*** IMPORTANT — WHY LOT_INCREMENT=0.04, NOT 0.05 OR 0.07 ***
-All three were backtested head-to-head on the same 2022-2026 gold data,
-identical entries (same 42.5% event-level win rate at every increment —
-the increment only changes position size, not which events win or lose):
-  +0.04: $90 -> $31,210, NEVER went negative (min balance $55.96),
-         max base lot reached 4.50, worst single event -$652.08.
-  +0.05: $90 -> $36,261, stayed positive throughout, max base lot 5.22,
-         worst single event -$743.60.
-  +0.07: $90 -> $48,699, WENT NEGATIVE (-$18.97) on this same trusted
-         dataset before recovering, max base lot 7.01, worst single
-         event -$995.28.
-0.04 was chosen specifically because it's the only one of the three that
-never breached zero on the historical data — 0.05 and especially 0.07
-show the same underlying mechanism can fail outright with a bigger step,
-even on data that's otherwise held up all session. This was also tested
-on a second, independent dataset (different source/format, 2018-2026) at
-+0.05: that run went NEGATIVE FOR OVER A YEAR (June 2024-July 2025,
-reaching -$228.06) before an exceptional trend day rescued it. A real
-account would have been margin-called long before that recovery — this
-is why 0.04, the most conservative of the three tested, is what's
-actually wired in here, not the biggest final-number version.
+Entry  : Buy-stop + sell-stop straddle at the release, offset $3 from the
+         anchor price. Whichever side fills is the trade. Now covers
+         THREE event types — NFP, CPI, and FOMC — each on its own
+         schedule (NFP/CPI at 8:30 AM ET, FOMC at 2:00 PM ET).
+SL     : Real $5 broker-side stop — can still trigger before the
+         1-minute mark if price moves against it fast enough.
+Exit   : Hard 1-minute force-close, no TP, no reload. Whichever comes
+         first — the SL hitting, or 60 seconds elapsing — ends the
+         trade.
+Sizing : Kelly-flat 14.1% base lot formula (same as the other two news
+         strategies), computed once at entry — no reload here to grow it
+         further.
+Filter : NONE. Earlier versions of this project used a "skip NFP within
+         3 days of a preceding FOMC" filter — that was found (and
+         genuinely helped) for the RELOAD mechanic specifically, because
+         near-FOMC NFP events tended to whipsaw over that mechanic's
+         longer holding period. This mechanic only holds for 60 seconds,
+         well before that kind of reversal has time to develop. Tested
+         directly: removing the filter for THIS mechanic on real 1-min
+         data improved the NFP result (50.0%->59.1% win rate, $278.52->
+         $784.06 final) rather than hurting it — all 4 previously-
+         filtered events turned out to be wins. Lesson: a filter that
+         helps one mechanic isn't automatically right for a different
+         one built on the same event calendar.
 
-*** EVEN AT 0.04, THIS IS STILL GENUINELY AGGRESSIVE ***
-- Only 17 of 40 backtested events (42.5%) were net winners. This makes
-  money because losses are bounded (roughly one base-lot SL hit per
-  losing event) while winning chains compound — NOT because it wins most
-  of the time. Expect more losing months than winning ones by count.
-- The total backtested return is heavily concentrated in two exceptional
-  trend days (June 5 and July 2, 2026) — without those two events, the
-  running balance would have been far flatter through most of the
-  4-year test. Do not expect every strong month to look like those.
-- Base lot itself grows as the account grows (Kelly-flat), which means
-  later events carry meaningfully larger absolute risk than early ones,
-  by design — this compounds with the flat reload growth on top.
+*** BACKTEST EVIDENCE — REAL, MINUTE-LEVEL, CONTROL-TESTED ***
+Unlike the first version of this file (built with zero evidence, purely
+from live observation on 2026-08-07), this has now been properly tested
+against genuine 1-minute XAUUSD data (2024-01-02 to 2025-12-05) for all
+three event types, each checked against a random-time control (200
+bootstrap draws of the same number of random, non-event timestamps) to
+confirm the edge isn't just riding the broader 2024-2025 gold uptrend:
+  NFP  (22 events, no filter): 59.1% win rate, $90 -> $784.06.
+  CPI  (22 events): 54.5% win rate, $90 -> $321.90. Beat ALL 200 random
+       draws (100th percentile) - directly contradicts an earlier,
+       different mechanic (tight-TP-reload) which tested badly on CPI;
+       the lesson there was that CPI doesn't suit a sustained reload
+       chain, not that CPI itself lacks a real reaction edge.
+  FOMC (15 events): 66.7% win rate (best of the three), $90 -> $111.56
+       (smallest $ total - gold reacts less dramatically to FOMC than to
+       NFP/CPI surprises). Beat 99% of 200 random draws. Notably the
+       LEAST likely of the three to be a trend-bias artifact, since wins
+       split nearly evenly between buy (8) and sell (7).
+A consistent finding across all three: roughly 20-23% of losses hit the
+SL within the SAME MINUTE as entry - a real, fast whipsaw-reversal risk,
+present but not fatal to any of the three.
 
-*** SAME "NOT LIVE-READY" WARNING AS EVERY OTHER STRATEGY THIS SESSION ***
-All of the above comes from ONE historical dataset. Treat this as
-demo-only, to accumulate real forward evidence, until it's been checked
-against data it was never tuned on.
+*** STILL DEMO ONLY ***
+Real evidence now, but still one historical window (2024-2025), not
+tested against a second independent one, and no spread cost was modeled
+(the 1-min data source had no spread column) - real results would be
+modestly lower. Not live-capital-ready.
 
 CHANGE LOG (this revision):
-  - Fixed a real gap: manage_open_trade() now force-closes a chain at
-    the 8h max_hold_hours deadline, derived statelessly from the event
-    calendar (see _current_chain_release_time()). Previously,
-    max_hold_hours only bounded the PRE-fill pending-order expiration —
-    once a position was open and reloading, nothing ever closed it.
-    Backtested numbers already assumed this force-close happens (4 of 40
-    historical chains hit it, including the single largest winning chain
-    in the dataset) — this revision makes the live code match that.
-  - Polling moved to every 1 minute (main_news_reload.py), down from 5.
-    A reload chain can move $6+ between polls; at 5-min polling, a fast
-    move could skip past several $6 reload steps in one gap instead of
-    triggering them individually, diverging from what was backtested
-    (which assumes each $6 increment is caught). 1-min polling keeps live
-    behavior closer to the backtest's assumption of near-immediate
-    detection.
+  - Expanded from NFP-only to three event types: NFP, CPI, FOMC - each
+    on its own real, source-verified schedule.
+  - Removed the FOMC-proximity filter entirely - see "Filter" above for
+    why it was mechanic-specific, not a universal rule, and actively
+    hurt this mechanic's NFP results when tested directly.
+  - Docstring rewritten to reflect real backtest evidence (see above) -
+    this is no longer a zero-evidence experiment.
 
 CHANGE LOG (initial):
-  - Initial build. Separate MAGIC number and separate process from both
-    straddle_strategy.py AND news_confirm_strategy.py — three genuinely
-    different mechanics, each standalone, matching this project's
-    established pattern of never merging strategies into one loop.
+  - Initial build. Fourth standalone strategy, own MAGIC number, own
+    process — same pattern as straddle_strategy.py, news_confirm_
+    strategy.py, and news_reload_strategy.py never sharing a loop.
+  - Includes the "already traded this event" guard from the start,
+    given a live bug found in news_reload_strategy.py on 2026-08-07 (a
+    fast-resolving chain let a second straddle open within the same
+    5-min trigger window) — critical here too, arguably more so, since
+    this mechanic resolves in under a minute almost every time.
 """
 
 from __future__ import annotations
 
 import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import MetaTrader5 as mt5
 
 # ---------------------------------------------------------------------------
-# Event calendars — MANUALLY MAINTAINED, same discipline and same dates as
-# news_confirm_strategy.py. Deliberately duplicated here rather than shared
-# via import, matching this project's preference for standalone files with
-# no cross-strategy dependencies. Keep both files' calendars in sync by
-# hand when updating either one.
+# Event calendars — MANUALLY MAINTAINED. Three separate schedules, one per
+# event type, each source-verified (BLS for NFP/CPI, Federal Reserve for
+# FOMC) — do not assume a fixed-rule pattern for any of them; the 2025
+# government shutdown proved that assumption can silently break.
 # ---------------------------------------------------------------------------
 
 NFP_SCHEDULE_UTC: List[datetime.datetime] = [
@@ -118,57 +112,55 @@ NFP_SCHEDULE_UTC: List[datetime.datetime] = [
     datetime.datetime(2026, 11, 6, 13, 30, tzinfo=datetime.timezone.utc),
     datetime.datetime(2026, 12, 4, 13, 30, tzinfo=datetime.timezone.utc),
     # Add next month's date here. DST-adjust by hand: 8:30 AM ET = 12:30 UTC
-    # during DST (roughly Mar-Nov), 13:30 UTC otherwise. Do NOT assume
-    # "first Friday" — verify each one against bls.gov/schedule directly.
+    # during DST (roughly Mar-Nov), 13:30 UTC otherwise.
 ]
 
-FOMC_DATES_UTC: List[datetime.date] = [
-    datetime.date(2026, 7, 29),
-    datetime.date(2026, 9, 16),
-    datetime.date(2026, 10, 28),
-    datetime.date(2026, 12, 9),
-    datetime.date(2027, 1, 27),
-    datetime.date(2027, 3, 17),
-    datetime.date(2027, 4, 28),
-    datetime.date(2027, 6, 9),
-    datetime.date(2027, 7, 28),
-    datetime.date(2027, 9, 15),
-    datetime.date(2027, 10, 27),
-    datetime.date(2027, 12, 8),
-    # Only the SECOND day of each 2-day meeting. Add the next announced
-    # year's dates in one go when the Fed publishes them.
+CPI_SCHEDULE_UTC: List[datetime.datetime] = [
+    datetime.datetime(2026, 8, 12, 12, 30, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 9, 11, 12, 30, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 14, 12, 30, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 11, 10, 13, 30, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 10, 13, 30, tzinfo=datetime.timezone.utc),
+    # Same 8:30 AM ET / DST rule as NFP. Check bls.gov/schedule/news_release/cpi.htm
+]
+
+FOMC_SCHEDULE_UTC: List[datetime.datetime] = [
+    datetime.datetime(2026, 9, 16, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 28, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 9, 19, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 1, 27, 19, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 3, 17, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 4, 28, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 6, 9, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 7, 28, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 9, 15, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 10, 27, 18, 0, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 12, 8, 19, 0, tzinfo=datetime.timezone.utc),
+    # Decision time is 2:00 PM ET = 18:00 UTC during DST, 19:00 UTC otherwise.
+    # Add each new year's dates in one go once the Fed publishes them.
 ]
 
 
 def _validate_calendar_freshness() -> None:
-    """Same freshness check as news_confirm_strategy.py — no fetching, just
-    compares the hardcoded lists above to today's date and warns loudly if
-    either has run dry of upcoming dates."""
     now = datetime.datetime.now(datetime.timezone.utc)
-    today = now.date()
-
-    future_nfp = [d for d in NFP_SCHEDULE_UTC if d >= now]
-    if not future_nfp:
-        print(
-            "  !!! WARNING: NFP_SCHEDULE_UTC has NO upcoming dates — "
-            "this bot will never enter until you add more. Check "
-            "bls.gov/schedule and update the list in news_reload_strategy.py now."
-        )
-    else:
-        days_until_next = (min(future_nfp).date() - today).days
-        if days_until_next > 40:
+    for name, schedule in (
+        ("NFP", NFP_SCHEDULE_UTC),
+        ("CPI", CPI_SCHEDULE_UTC),
+        ("FOMC", FOMC_SCHEDULE_UTC),
+    ):
+        future = [d for d in schedule if d >= now]
+        if not future:
             print(
-                f"  WARNING: next NFP date is {days_until_next} days away "
-                f"({min(future_nfp).date()}) — double-check the list isn't stale."
+                f"  !!! WARNING: {name}_SCHEDULE_UTC has NO upcoming dates — "
+                f"update the list in news_spike_strategy.py now."
             )
-
-    future_fomc = [d for d in FOMC_DATES_UTC if d >= today]
-    if not future_fomc:
-        print(
-            "  !!! WARNING: FOMC_DATES_UTC has NO upcoming dates — the "
-            "FOMC-proximity filter will not work correctly. Check "
-            "federalreserve.gov/monetarypolicy/fomccalendars.htm and update now."
-        )
+        else:
+            days_until_next = (min(future) - now).days
+            if days_until_next > 40:
+                print(
+                    f"  WARNING: next {name} date is {days_until_next} days away "
+                    f"({min(future)}) — double-check the list isn't stale."
+                )
 
 
 _validate_calendar_freshness()
@@ -183,23 +175,16 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
         "point_size": 0.001,
         "pip_value_per_lot": 100.0,
         "offset": 3.0,  # straddle distance from anchor, in $
-        "tp": 6.0,  # tight take-profit, in $
-        "sl": 5.0,  # stop-loss, in $ — chain ends here
-        "max_hold_hours": 8.0,  # chain's own time window
+        "sl": 5.0,  # stop-loss, in $
+        "max_hold_seconds": 60.0,  # hard force-close — the whole point of this strategy
     },
 }
 
-RISK_PCT = 14.1  # "quarter-Kelly" base lot per event — see
-# module docstring for the full derivation.
-LOT_INCREMENT = 0.04  # flat $ added to lot on every TP-hit reload
-# within one chain — see docstring for why
-# 0.04 specifically, not 0.05 or 0.07.
-
-MAGIC = 20260810  # unique to this strategy — must not collide
-# with straddle_strategy.py's or
-# news_confirm_strategy.py's MAGIC numbers
-
-FOMC_PROXIMITY_DAYS = 3
+RISK_PCT = 14.1  # same quarter-Kelly base as the other two news strategies —
+# UNCHANGED from the NFP-only version, see _base_lot() below.
+MAGIC = 20260807  # unique to this strategy — must not collide with
+# straddle_strategy.py (20260716), news_confirm_strategy.py
+# (20260801), or news_reload_strategy.py (20260810)
 
 
 def _pip_value_per_lot(symbol: str) -> float:
@@ -217,7 +202,7 @@ def _round_price(price: float, symbol: str) -> float:
 # ---------------------------------------------------------------------------
 
 
-class NewsReloadStrategy:
+class NewsSpikeStrategy:
     """No __init__ state beyond configuration — every method queries MT5
     fresh. See module docstring for full design rationale."""
 
@@ -232,8 +217,6 @@ class NewsReloadStrategy:
         return acc.balance if acc else self.starting_balance
 
     def _base_lot(self, symbol: str) -> float:
-        """RISK_PCT of CURRENT balance — recomputed fresh every time a NEW
-        chain starts. Never carried over from a previous event."""
         cfg = SYMBOL_CONFIG[symbol]
         risk_dollar = self._balance() * (RISK_PCT / 100.0)
         lot = risk_dollar / (cfg["sl"] * _pip_value_per_lot(symbol))
@@ -284,53 +267,53 @@ class NewsReloadStrategy:
 
     # ---------------------------------------------------------------- event calendar
 
-    def _current_chain_release_time(self) -> Optional[datetime.datetime]:
-        """The chain's ORIGINAL NFP release time, needed to enforce the
-        8-hour max_hold_hours deadline on an open/reloading position.
-        Can't just read pos.time — every reload closes the old position
-        and opens a brand new one via TRADE_ACTION_DEAL, so an open
-        position's own .time only reflects its most recent reload, not
-        the event that started the chain. Instead, this derives it from
-        the calendar itself: the most recent NFP release within the last
-        24 hours (comfortably longer than max_hold_hours) must be the
-        event this chain belongs to, since a chain only ever opens right
-        at a release and the whole strategy only trades once per event.
-        Fully stateless — nothing stored, just calendar + current time."""
-        now = datetime.datetime.now(datetime.timezone.utc)
-        candidates = [
-            t
-            for t in NFP_SCHEDULE_UTC
-            if t <= now and (now - t) <= datetime.timedelta(hours=24)
-        ]
-        return max(candidates) if candidates else None
-
-    def _next_nfp_trigger_window(
+    def _next_event_trigger_window(
         self, now: datetime.datetime
-    ) -> Optional[datetime.datetime]:
-        """Returns the NFP release time if `now` falls inside its 5-min
-        placement window (fires the straddle AT the release, not after
-        it — unlike news_confirm_strategy.py)."""
-        for release_time in NFP_SCHEDULE_UTC:
-            if release_time <= now < release_time + datetime.timedelta(minutes=5):
-                return release_time
+    ) -> Optional[Tuple[datetime.datetime, str]]:
+        """Checks all three schedules (NFP, CPI, FOMC) and returns
+        (release_time, event_type) if `now` falls inside any of their
+        5-min placement windows — or None. No proximity filter between
+        event types; see module docstring 'Filter' section for why."""
+        for event_type, schedule in (
+            ("NFP", NFP_SCHEDULE_UTC),
+            ("CPI", CPI_SCHEDULE_UTC),
+            ("FOMC", FOMC_SCHEDULE_UTC),
+        ):
+            for release_time in schedule:
+                if release_time <= now < release_time + datetime.timedelta(minutes=5):
+                    return release_time, event_type
         return None
 
-    def _days_since_fomc(self, event_date: datetime.date) -> int:
-        prior = [d for d in FOMC_DATES_UTC if d <= event_date]
-        if not prior:
-            return 9999
-        return (event_date - max(prior)).days
-
-    def _is_near_fomc(self, event_time: datetime.datetime) -> bool:
-        return self._days_since_fomc(event_time.date()) <= FOMC_PROXIMITY_DAYS
+    def _event_already_traded(
+        self, symbol: str, release_time: datetime.datetime
+    ) -> bool:
+        """Has this SPECIFIC event already produced a completed trade
+        today? Critical here — this mechanic typically resolves in under a
+        minute, well inside the 5-min trigger window, so without this
+        check the bot would happily re-enter multiple times for the same
+        event (exactly the bug found live in news_reload_strategy.py on
+        2026-08-07). Derived from real MT5 deal history, not stored."""
+        deals = (
+            mt5.history_deals_get(
+                release_time, datetime.datetime.now(datetime.timezone.utc)
+            )
+            or []
+        )
+        own_closes = [
+            d
+            for d in deals
+            if d.symbol == symbol and d.magic == MAGIC and d.entry == mt5.DEAL_ENTRY_OUT
+        ]
+        return len(own_closes) > 0
 
     # ---------------------------------------------------------------- entry
 
     def check_and_place(self, symbol: str) -> Dict[str, Any]:
-        """Call on every poll. Places the straddle AT the NFP release
-        moment (offset both sides of the current price) — no waiting, no
-        confirmation. Whichever side fills becomes the chain's first leg;
-        manage_open_trade() then handles the reload-on-TP behavior."""
+        """Call on every poll (1-min cadence recommended — see
+        main_news_spike.py). Places the straddle AT the release moment
+        for whichever event type (NFP/CPI/FOMC) is currently inside its
+        trigger window. manage_open_trade() then handles the hard
+        1-minute force-close — there is no TP, no reload here."""
         if symbol not in self.traded_symbols:
             return self._no(f"{symbol} not enabled")
 
@@ -342,14 +325,15 @@ class NewsReloadStrategy:
             return self._no("Straddle already pending")
 
         now = datetime.datetime.now(datetime.timezone.utc)
-        release_time = self._next_nfp_trigger_window(now)
-        if release_time is None:
-            return self._no("Not inside an NFP trigger window")
+        window = self._next_event_trigger_window(now)
+        if window is None:
+            return self._no("Not inside any event trigger window")
+        release_time, event_type = window
 
-        if self._is_near_fomc(release_time):
+        if self._event_already_traded(symbol, release_time):
             return self._no(
-                f"Skipped — NFP within {FOMC_PROXIMITY_DAYS} days of a preceding "
-                f"FOMC decision (days_since_fomc={self._days_since_fomc(release_time.date())})"
+                f"This {event_type} event already produced a completed trade — "
+                "no re-entry."
             )
 
         cfg = SYMBOL_CONFIG[symbol]
@@ -372,10 +356,11 @@ class NewsReloadStrategy:
         buy_sl = _round_price(buy_stop - sl, symbol)
         sell_sl = _round_price(sell_stop + sl, symbol)
 
-        lots = self._base_lot(symbol)  # fresh Kelly-flat base for this NEW chain
-        expiration = int(
-            (release_time + datetime.timedelta(hours=cfg["max_hold_hours"])).timestamp()
-        )
+        lots = self._base_lot(symbol)
+        # Pending orders expire quickly here — no point leaving them
+        # armed past the trigger window itself, since this strategy fires
+        # once and is done.
+        expiration = int((release_time + datetime.timedelta(minutes=5)).timestamp())
         filling_mode = self._filling_mode(symbol)
 
         tickets: Dict[str, Optional[int]] = {"buy": None, "sell": None}
@@ -391,9 +376,9 @@ class NewsReloadStrategy:
                     "type": order_type,
                     "price": price,
                     "sl": stop,
-                    "tp": 0.0,  # TP handled in manage_open_trade so we can reload on hit
+                    "tp": 0.0,
                     "magic": MAGIC,
-                    "comment": "news_reload_entry",
+                    "comment": "news_spike_entry",
                     "type_time": mt5.ORDER_TIME_SPECIFIED,
                     "expiration": expiration,
                     "type_filling": filling_mode,
@@ -415,22 +400,19 @@ class NewsReloadStrategy:
                     self._safe_order_send(
                         {"action": mt5.TRADE_ACTION_REMOVE, "order": t}
                     )
-            return self._no(f"Order send failed — rolled back")
+            return self._no("Order send failed — rolled back")
 
         return {
             "signal": "straddle",
             "buy_stop": buy_stop,
             "sell_stop": sell_stop,
             "lot_size": lots,
-            "reason": f"Straddle placed | buy={buy_stop} sell={sell_stop} | lots={lots}",
+            "reason": f"[{event_type}] Straddle placed | buy={buy_stop} sell={sell_stop} | lots={lots}",
         }
 
     # ---------------------------------------------------------------- OCO / cleanup
 
     def manage_pending_orders(self, symbol: str) -> str:
-        """Same OCO cleanup pattern as straddle_strategy.py — checked
-        FIRST, every cycle, unconditionally (that ordering bug is exactly
-        what broke the original straddle bot once already)."""
         pending = self._get_pending_orders(symbol)
         if pending["buy"] is None and pending["sell"] is None:
             return "No pending straddle"
@@ -462,104 +444,33 @@ class NewsReloadStrategy:
             return "Neither side filled — straddle cancelled"
         return "Pending"
 
-    # ---------------------------------------------------------------- trade management (reload chain)
+    # ---------------------------------------------------------------- trade management
 
     def manage_open_trade(self, symbol: str) -> str:
-        """Call on every poll while a position is open. Priority order:
-          1. Past the chain's 8h deadline (from the ORIGINAL release, not
-             this leg's own open time) -> force-close at market,
-             regardless of whether the chain is winning or losing right
-             now. This is what actually defines the strategy as an
-             NFP-reaction bet rather than an open-ended trend-follow —
-             see module docstring's 'why 8 hours' note. Backtested: 4 of
-             40 historical chains hit this boundary, including the
-             single largest winning chain in the whole dataset (June 5
-             2026, +$12,059.68) — the backtest numbers already assume
-             this force-close happens, so it needs to be real here too.
-          2. TP reached -> close this leg, reload same direction at lot +
-             LOT_INCREMENT.
-          3. Otherwise -> hold. (SL itself is a real broker-side stop,
-             enforced by MT5 on every tick regardless of polling — this
-             method never needs to check for it directly.)
-
-        NOTE: an earlier revision of this file relied on the pending
-        order's own `expiration` to bound total risk time, which only
-        covers the PRE-fill waiting phase — once a position was open and
-        reloading, nothing ever forced it closed. That gap is fixed here."""
+        """Call on every poll while a position is open. The ENTIRE job of
+        this method: has more than max_hold_seconds (60) elapsed since
+        this position opened? If yes, close it at market immediately,
+        regardless of profit or loss. No TP check, no reload — this is
+        deliberately the simplest possible exit."""
         pos = self._get_position(symbol)
         if pos is None:
             return "No open trade"
 
         cfg = SYMBOL_CONFIG[symbol]
+        open_time = datetime.datetime.fromtimestamp(pos.time, tz=datetime.timezone.utc)
+        elapsed = (
+            datetime.datetime.now(datetime.timezone.utc) - open_time
+        ).total_seconds()
 
-        release_time = self._current_chain_release_time()
-        if release_time is not None:
-            deadline = release_time + datetime.timedelta(hours=cfg["max_hold_hours"])
-            if datetime.datetime.now(datetime.timezone.utc) >= deadline:
-                closed = self._close_position_at_market(symbol, pos)
-                return (
-                    f"Past {cfg['max_hold_hours']}h max hold — chain force-closed at market"
-                    if closed
-                    else "Force-close FAILED — will retry next cycle"
-                )
-        else:
-            # Shouldn't normally happen (a position only exists because a
-            # recent release triggered it) — flagged loudly rather than
-            # silently skipping the deadline check.
-            print(
-                f"  WARNING: {symbol} has an open position but no NFP release "
-                f"found in the last 24h — can't enforce the max-hold deadline "
-                f"this cycle. Check NFP_SCHEDULE_UTC."
-            )
+        if elapsed < cfg["max_hold_seconds"]:
+            return f"Holding — {elapsed:.0f}s elapsed, force-close at {cfg['max_hold_seconds']:.0f}s"
 
-        tick = self._get_tick(symbol)
-        if tick is None:
-            return "No tick data"
-
-        is_buy = pos.type == mt5.POSITION_TYPE_BUY
-        entry = pos.price_open
-        tp_distance = cfg["tp"]
-        current_price = tick.bid if is_buy else tick.ask
-
-        favorable_move = (current_price - entry) if is_buy else (entry - current_price)
-        if favorable_move < tp_distance:
-            return "Holding — TP not reached"
-
-        # TP reached: close this leg at market, then reload same direction
         closed = self._close_position_at_market(symbol, pos)
-        if not closed:
-            return "TP reached but close FAILED — will retry next cycle"
-
-        new_lot = round((pos.volume + LOT_INCREMENT) / 0.01) * 0.01
-        entry_price = tick.ask if is_buy else tick.bid
-        sl_price = entry_price - cfg["sl"] if is_buy else entry_price + cfg["sl"]
-        filling_mode = self._filling_mode(symbol)
-
-        result = self._safe_order_send(
-            {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": new_lot,
-                "type": mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL,
-                "price": entry_price,
-                "sl": _round_price(sl_price, symbol),
-                "tp": 0.0,
-                "deviation": 10,
-                "magic": MAGIC,
-                "comment": "news_reload_add",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": filling_mode,
-            }
+        return (
+            f"{cfg['max_hold_seconds']:.0f}s elapsed — force-closed at market"
+            if closed
+            else "Force-close FAILED — will retry next cycle"
         )
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            reason = (
-                f"retcode={result.retcode} comment='{result.comment}'"
-                if result
-                else "order_send returned None"
-            )
-            return f"TP hit, closed OK, but RELOAD REJECTED — {reason}"
-
-        return f"TP hit -> reloaded {('BUY' if is_buy else 'SELL')} | new lot={new_lot}"
 
     def _close_position_at_market(self, symbol: str, position) -> bool:
         tick = self._get_tick(symbol)
@@ -576,7 +487,7 @@ class NewsReloadStrategy:
                 "price": tick.bid if is_buy else tick.ask,
                 "deviation": 10,
                 "magic": MAGIC,
-                "comment": "news_reload_tp_close",
+                "comment": "news_spike_force_close",
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": self._filling_mode(symbol),
             }
@@ -630,27 +541,28 @@ class NewsReloadStrategy:
 
     def __repr__(self) -> str:
         return (
-            f"NewsReloadStrategy(symbols={self.traded_symbols}, "
-            f"risk_pct={RISK_PCT}% (quarter-Kelly, per-event base), "
-            f"lot_increment={LOT_INCREMENT} (flat, within-chain only), "
-            f"fomc_filter={FOMC_PROXIMITY_DAYS}d, stateless=True)"
+            f"NewsSpikeStrategy(symbols={self.traded_symbols}, "
+            f"events=[NFP,CPI,FOMC], risk_pct={RISK_PCT}% (quarter-Kelly, single-shot), "
+            f"max_hold={SYMBOL_CONFIG['XAUUSDm']['max_hold_seconds']:.0f}s, "
+            f"filter=None, one_shot_per_event=True, stateless=True)"
         )
 
 
 if __name__ == "__main__":
-    s = NewsReloadStrategy()
+    s = NewsSpikeStrategy()
     print(s)
     print()
-    future_nfp = [
-        d for d in NFP_SCHEDULE_UTC if d >= datetime.datetime.now(datetime.timezone.utc)
-    ]
-    print(
-        f"NFP events scheduled: {len(NFP_SCHEDULE_UTC)} total, {len(future_nfp)} upcoming"
-    )
-    print(
-        f"  Next: {min(future_nfp) if future_nfp else 'NONE — add dates to NFP_SCHEDULE_UTC'}"
-    )
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for name, schedule in (
+        ("NFP", NFP_SCHEDULE_UTC),
+        ("CPI", CPI_SCHEDULE_UTC),
+        ("FOMC", FOMC_SCHEDULE_UTC),
+    ):
+        future = [d for d in schedule if d >= now]
+        print(f"{name} events scheduled: {len(schedule)} total, {len(future)} upcoming")
+        print(f"  Next: {min(future) if future else 'NONE — add dates'}")
     print()
+    print("*** Backed by real, control-tested 1-min data — see module docstring ***")
     print(
-        "*** DEMO-READY, NOT LIVE-READY — see module docstring 'IMPORTANT' sections ***"
+        "*** Still DEMO ONLY — one historical window, not yet out-of-sample tested ***"
     )
