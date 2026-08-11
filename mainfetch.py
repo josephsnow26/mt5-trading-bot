@@ -17,7 +17,7 @@ if not mt5.initialize(
 print("MT5 connected:", mt5.account_info().server)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SYMBOL    = "XAUUSDm"
+SYMBOL    = "XAGUSDm"
 TIMEFRAME = mt5.TIMEFRAME_M1
 
 t = "1m"
@@ -49,7 +49,7 @@ if rates is None or len(rates) == 0:
     # Second try: use copy_rates_range with smaller range
     print("\nTrying copy_rates_range with 2025 only...")
     START = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    END   = datetime(2026, 6, 29, tzinfo=timezone.utc)
+    END   = datetime(2026, 8, 11, tzinfo=timezone.utc)
     rates = mt5.copy_rates_range(SYMBOL, TIMEFRAME, START, END)
 
     if rates is None or len(rates) == 0:

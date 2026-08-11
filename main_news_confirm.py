@@ -33,7 +33,7 @@ def sleep_until_next_30sec():
 
 reload_decouple()
 
-LIVE = True   # NOT backtested at all — see news_spike_strategy.py's
+LIVE = False   # NOT backtested at all — see news_spike_strategy.py's
                # module docstring "DATA LIMITATION" section. Demo only.
 
 # Fourth standalone process, own magic number, no shared loop with
@@ -51,7 +51,7 @@ def main():
         "mt5_pathway": config("MT5_PATHWAY"),
     }
 
-    print(f"Mode: {'LIVE' if LIVE else 'DEMO'}")
+    print(f"Mode: {'LIVE' if LIVE else 'DEMO'}{mt5_settings}")
 
     if not mt5_config.start_mt5(mt5_settings):
         print("MT5 failed to start")

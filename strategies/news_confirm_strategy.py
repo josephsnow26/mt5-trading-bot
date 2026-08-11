@@ -18,77 +18,86 @@ Edge   : Straddle-at-release entry (same OCO pattern as
          round-tripped almost all the way back to flat within 30 min).
          One shot per event, then done.
 
-Entry  : Buy-stop + sell-stop straddle at the release, offset $3 from the
-         anchor price. Whichever side fills is the trade. Now covers
-         THREE event types — NFP, CPI, and FOMC — each on its own
+Entry  : Buy-stop + sell-stop straddle at the release, offset from the
+         anchor price (per-symbol distance below). Whichever side fills
+         is the trade. Covers NFP, CPI, and FOMC — each on its own
          schedule (NFP/CPI at 8:30 AM ET, FOMC at 2:00 PM ET).
-SL     : Real $5 broker-side stop — can still trigger before the
-         1-minute mark if price moves against it fast enough.
+SL     : Real per-symbol stop — can still trigger before the 1-minute
+         mark if price moves against it fast enough.
 Exit   : Hard 1-minute force-close, no TP, no reload. Whichever comes
          first — the SL hitting, or 60 seconds elapsing — ends the
          trade.
 Sizing : Kelly-flat 14.1% base lot formula (same as the other two news
          strategies), computed once at entry — no reload here to grow it
          further.
-Filter : NONE. Earlier versions of this project used a "skip NFP within
-         3 days of a preceding FOMC" filter — that was found (and
-         genuinely helped) for the RELOAD mechanic specifically, because
-         near-FOMC NFP events tended to whipsaw over that mechanic's
-         longer holding period. This mechanic only holds for 60 seconds,
-         well before that kind of reversal has time to develop. Tested
-         directly: removing the filter for THIS mechanic on real 1-min
-         data improved the NFP result (50.0%->59.1% win rate, $278.52->
-         $784.06 final) rather than hurting it — all 4 previously-
-         filtered events turned out to be wins. Lesson: a filter that
-         helps one mechanic isn't automatically right for a different
-         one built on the same event calendar.
+Filter : NONE. See prior revision's docstring — the FOMC-proximity
+         filter was tested and removed for THIS mechanic specifically
+         (helped the reload chain, hurt the spike mechanic). Not
+         re-litigated here.
 
-*** BACKTEST EVIDENCE — REAL, MINUTE-LEVEL, CONTROL-TESTED ***
-Unlike the first version of this file (built with zero evidence, purely
-from live observation on 2026-08-07), this has now been properly tested
-against genuine 1-minute XAUUSD data (2024-01-02 to 2025-12-05) for all
-three event types, each checked against a random-time control (200
-bootstrap draws of the same number of random, non-event timestamps) to
-confirm the edge isn't just riding the broader 2024-2025 gold uptrend:
-  NFP  (22 events, no filter): 59.1% win rate, $90 -> $784.06.
-  CPI  (22 events): 54.5% win rate, $90 -> $321.90. Beat ALL 200 random
-       draws (100th percentile) - directly contradicts an earlier,
-       different mechanic (tight-TP-reload) which tested badly on CPI;
-       the lesson there was that CPI doesn't suit a sustained reload
-       chain, not that CPI itself lacks a real reaction edge.
-  FOMC (15 events): 66.7% win rate (best of the three), $90 -> $111.56
-       (smallest $ total - gold reacts less dramatically to FOMC than to
-       NFP/CPI surprises). Beat 99% of 200 random draws. Notably the
-       LEAST likely of the three to be a trend-bias artifact, since wins
-       split nearly evenly between buy (8) and sell (7).
-A consistent finding across all three: roughly 20-23% of losses hit the
-SL within the SAME MINUTE as entry - a real, fast whipsaw-reversal risk,
-present but not fatal to any of the three.
+*** VALIDATED EVIDENCE — XAUUSDm ONLY ***
+XAUUSDm is backed by real, minute-level, control-tested backtest data
+(2024-01-02 to 2025-12-05, see prior revision's docstring for the full
+NFP/CPI/FOMC breakdown — 59.1%/54.5%/66.7% win rates, all beat random-
+time controls).
 
-*** STILL DEMO ONLY ***
-Real evidence now, but still one historical window (2024-2025), not
-tested against a second independent one, and no spread cost was modeled
-(the 1-min data source had no spread column) - real results would be
-modestly lower. Not live-capital-ready.
+*** *** EVERYTHING ELSE IN THIS FILE IS STRUCTURAL, NOT VALIDATED *** ***
+XAGUSDm and the 7 major USD pairs (EURUSDm, GBPUSDm, USDJPYm, USDCHFm,
+AUDUSDm, USDCADm, NZDUSDm) were added on 2026-08-11 at Joseph's explicit
+instruction, with explicit sign-off to skip backtesting: same mechanic,
+same 60s force-close, same Kelly-flat 14.1% sizing formula, reusing the
+15/25-pip offset/SL already validated for EUR/GBP/JPY in
+straddle_strategy.py's own (different, daily-trigger) mechanic as the
+least-arbitrary default available. This is a DIFFERENT mechanic
+(60-second event-spike, not a daily-session straddle) — the 15/25 pip
+distance carries over structurally, not evidentially. Silver's offset/SL
+($0.05 / $0.08) are new, uncalibrated guesses scaled roughly off gold's
+$3/$5 by relative price level — pure guess, not even that.
 
-CHANGE LOG (this revision):
+None of the 8 new symbols have any event-reaction backtest behind them.
+Unknown and unverified for all 8:
+  - whether gold's spike edge (fast post-release reaction, fade before
+    60s) generalizes to FX majors or silver at all
+  - correct offset/SL distance per symbol (reused, not fitted)
+  - pip_value_per_lot per symbol (approximated below — JPY/CHF/CAD
+    pairs have USD as the base currency, so true pip value swings with
+    the live exchange rate; the constants below are rough single-point
+    approximations, not looked up from mt5.symbol_info() at runtime)
+  - decimal/point precision matching Exness's real quoting for each
+    symbol (assumed from typical broker convention, not confirmed
+    against this account)
+This is going live on demo (or worse) purely on the strength of "same
+mechanic, different instrument" reasoning. Treat every non-XAUUSDm
+symbol here as an unvalidated experiment until it has its own
+backtested evidence — same standing as GOLD_ENABLED was treated before
+its own backtest existed.
+
+*** STILL DEMO ONLY (all symbols) ***
+
+CHANGE LOG (this revision, 2026-08-11):
+  - Added XAGUSDm + 7 major USD pairs (EURUSDm, GBPUSDm, USDJPYm,
+    USDCHFm, AUDUSDm, USDCADm, NZDUSDm). No backtest run — explicit
+    instruction to skip it. Reused straddle_strategy.py's 15/25-pip
+    offset/SL for the FX pairs already partially covered there
+    (EUR/GBP/JPY); extended the same distances to CHF/AUD/CAD/NZD for
+    consistency, since none of those have any established number either.
+  - Added `decimals` to SYMBOL_CONFIG per symbol and generalized
+    `_round_price()` off it instead of a single XAUUSDm special-case.
+  - `traded_symbols` was already derived from `SYMBOL_CONFIG.keys()` —
+    no change needed there, all new symbols pick up automatically.
+
+CHANGE LOG (prior revision):
   - Expanded from NFP-only to three event types: NFP, CPI, FOMC - each
     on its own real, source-verified schedule.
-  - Removed the FOMC-proximity filter entirely - see "Filter" above for
-    why it was mechanic-specific, not a universal rule, and actively
-    hurt this mechanic's NFP results when tested directly.
-  - Docstring rewritten to reflect real backtest evidence (see above) -
-    this is no longer a zero-evidence experiment.
+  - Removed the FOMC-proximity filter entirely - see above for why it
+    was mechanic-specific, not a universal rule.
 
 CHANGE LOG (initial):
   - Initial build. Fourth standalone strategy, own MAGIC number, own
     process — same pattern as straddle_strategy.py, news_confirm_
     strategy.py, and news_reload_strategy.py never sharing a loop.
   - Includes the "already traded this event" guard from the start,
-    given a live bug found in news_reload_strategy.py on 2026-08-07 (a
-    fast-resolving chain let a second straddle open within the same
-    5-min trigger window) — critical here too, arguably more so, since
-    this mechanic resolves in under a minute almost every time.
+    given a live bug found in news_reload_strategy.py on 2026-08-07.
 """
 
 from __future__ import annotations
@@ -106,6 +115,9 @@ import MetaTrader5 as mt5
 # ---------------------------------------------------------------------------
 
 NFP_SCHEDULE_UTC: List[datetime.datetime] = [
+    # --- MANUAL TEST TRIGGER — remove after the 2026-08-11 test run ---
+    # 08:15 UTC = 09:15 Lagos (WAT, UTC+1). Window is release_time to
+    # release_time+5min, so this fires the bot 09:15-09:20 Lagos time.
     datetime.datetime(2026, 8, 7, 12, 30, tzinfo=datetime.timezone.utc),
     datetime.datetime(2026, 9, 4, 12, 30, tzinfo=datetime.timezone.utc),
     datetime.datetime(2026, 10, 2, 12, 30, tzinfo=datetime.timezone.utc),
@@ -168,15 +180,89 @@ _validate_calendar_freshness()
 # ---------------------------------------------------------------------------
 # Per-symbol configuration
 # ---------------------------------------------------------------------------
+# offset/sl are in PRICE units (not pips) — already converted below so the
+# entry code never has to know per-symbol pip size.
+#
+# Lot sizing no longer uses a static pip-value guess per symbol (that
+# approach produced dangerously wrong lots for USDJPYm/XAGUSDm in the
+# 2026-08-11 live test — see _base_lot()). Position size is now computed
+# LIVE from mt5.symbol_info(symbol).trade_tick_value/trade_tick_size,
+# clamped to the broker's real volume_min/volume_max/volume_step.
+#
+# decimals controls price rounding in _round_price().
 
 SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
     "XAUUSDm": {
         "pip": 1.0,
         "point_size": 0.001,
-        "pip_value_per_lot": 100.0,
-        "offset": 3.0,  # straddle distance from anchor, in $
-        "sl": 5.0,  # stop-loss, in $
-        "max_hold_seconds": 60.0,  # hard force-close — the whole point of this strategy
+        "offset": 3.0,  # $
+        "sl": 5.0,  # $
+        "decimals": 2,
+        "max_hold_seconds": 60.0,
+    },
+    "XAGUSDm": {
+        "pip": 0.01,
+        "point_size": 0.001,
+        "offset": 0.04,  # $ — UNCALIBRATED, tightened 2026-08-11 (evidence: 122p NFP move dwarfs this)
+        "sl": 0.06,  # $ — UNCALIBRATED, tightened 2026-08-11
+        "decimals": 3,
+        "max_hold_seconds": 60.0,
+    },
+    "EURUSDm": {
+        "pip": 0.0001,
+        "point_size": 0.00001,
+        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2): offset was eating into the 60s window on fast one-directional moves
+        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2)
+        "decimals": 5,
+        "max_hold_seconds": 60.0,
+    },
+    "GBPUSDm": {
+        "pip": 0.0001,
+        "point_size": 0.00001,
+        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2): offset was eating into the 60s window on fast one-directional moves
+        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2)
+        "decimals": 5,
+        "max_hold_seconds": 60.0,
+    },
+    "USDJPYm": {
+        "pip": 0.01,
+        "point_size": 0.001,
+        "offset": 0.08,  # 8 pips — tightened again 2026-08-11 (v2)
+        "sl": 0.15,  # 15 pips — tightened again 2026-08-11 (v2)
+        "decimals": 3,
+        "max_hold_seconds": 60.0,
+    },
+    "USDCHFm": {
+        "pip": 0.0001,
+        "point_size": 0.00001,
+        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "decimals": 5,
+        "max_hold_seconds": 60.0,
+    },
+    "AUDUSDm": {
+        "pip": 0.0001,
+        "point_size": 0.00001,
+        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "decimals": 5,
+        "max_hold_seconds": 60.0,
+    },
+    "USDCADm": {
+        "pip": 0.0001,
+        "point_size": 0.00001,
+        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "decimals": 5,
+        "max_hold_seconds": 60.0,
+    },
+    "NZDUSDm": {
+        "pip": 0.0001,
+        "point_size": 0.00001,
+        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "decimals": 5,
+        "max_hold_seconds": 60.0,
     },
 }
 
@@ -187,14 +273,9 @@ MAGIC = 20260807  # unique to this strategy — must not collide with
 # (20260801), or news_reload_strategy.py (20260810)
 
 
-def _pip_value_per_lot(symbol: str) -> float:
-    return SYMBOL_CONFIG.get(symbol, {}).get("pip_value_per_lot", 100.0)
-
-
 def _round_price(price: float, symbol: str) -> float:
-    if symbol == "XAUUSDm":
-        return round(price, 2)
-    return round(price, 5)
+    decimals = SYMBOL_CONFIG.get(symbol, {}).get("decimals", 5)
+    return round(price, decimals)
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +298,39 @@ class NewsSpikeStrategy:
         return acc.balance if acc else self.starting_balance
 
     def _base_lot(self, symbol: str) -> float:
+        """Sizing pulled LIVE from the broker, not guessed. trade_tick_value
+        / trade_tick_size gives $-per-1.0-price-unit-move per lot, already
+        converted to account currency by MT5 — this replaces the static
+        pip_value_per_lot table, which was wrong by orders of magnitude
+        for several symbols (2026-08-11 live test: USDJPYm computed 42
+        lots, XAGUSDm 17.62 lots, off a hand-guessed constant).
+        Also clamps to the symbol's real volume_min/volume_max/volume_step
+        so oversized risk can't silently overflow into an 'Invalid volume'
+        rejection — or worse, an accepted-but-insane lot size."""
         cfg = SYMBOL_CONFIG[symbol]
+        info = mt5.symbol_info(symbol)
+        if info is None or not info.trade_tick_size:
+            print(f"  {symbol}: symbol_info unavailable — defaulting to 0.01 floor")
+            return 0.01
+
+        value_per_unit_per_lot = info.trade_tick_value / info.trade_tick_size
         risk_dollar = self._balance() * (RISK_PCT / 100.0)
-        lot = risk_dollar / (cfg["sl"] * _pip_value_per_lot(symbol))
-        return max(0.01, round(lot / 0.01) * 0.01)
+        raw_lot = risk_dollar / (cfg["sl"] * value_per_unit_per_lot)
+
+        vol_min = info.volume_min or 0.01
+        vol_max = info.volume_max or raw_lot
+        vol_step = info.volume_step or 0.01
+
+        if raw_lot > vol_max:
+            print(
+                f"  {symbol}: target risk implies {raw_lot:.2f} lots, "
+                f"clamped to broker max {vol_max:.2f} — actual $ risk on this "
+                f"trade will be LESS than the {RISK_PCT}% target."
+            )
+
+        lot = max(vol_min, min(raw_lot, vol_max))
+        lot = round(lot / vol_step) * vol_step
+        return round(max(lot, vol_min), 2)
 
     # ---------------------------------------------------------------- MT5 reads
 
@@ -528,6 +638,16 @@ class NewsSpikeStrategy:
             "win_rate": f"{wins/len(all_closes)*100:.1f}%",
         }
 
+    def get_performance_by_symbol(self, lookback_days: int = 120) -> Dict[str, Any]:
+        """Per-symbol breakdown — worth checking regularly now that 8 of
+        9 symbols are unvalidated. A symbol quietly losing consistently
+        is the signal to pull it, same standing as BTCUSDm's flagged
+        negative YTD drift on the daily straddle bot."""
+        return {
+            sym: self.get_performance_summary(sym, lookback_days)
+            for sym in self.traded_symbols
+        }
+
     # ---------------------------------------------------------------- util
 
     def _no(self, reason: str) -> Dict[str, Any]:
@@ -543,8 +663,8 @@ class NewsSpikeStrategy:
         return (
             f"NewsSpikeStrategy(symbols={self.traded_symbols}, "
             f"events=[NFP,CPI,FOMC], risk_pct={RISK_PCT}% (quarter-Kelly, single-shot), "
-            f"max_hold={SYMBOL_CONFIG['XAUUSDm']['max_hold_seconds']:.0f}s, "
-            f"filter=None, one_shot_per_event=True, stateless=True)"
+            f"max_hold=60s, filter=None, one_shot_per_event=True, stateless=True, "
+            f"validated=['XAUUSDm'], unvalidated={[s for s in SYMBOL_CONFIG if s != 'XAUUSDm']})"
         )
 
 
@@ -562,7 +682,6 @@ if __name__ == "__main__":
         print(f"{name} events scheduled: {len(schedule)} total, {len(future)} upcoming")
         print(f"  Next: {min(future) if future else 'NONE — add dates'}")
     print()
-    print("*** Backed by real, control-tested 1-min data — see module docstring ***")
-    print(
-        "*** Still DEMO ONLY — one historical window, not yet out-of-sample tested ***"
-    )
+    print("*** XAUUSDm backed by real, control-tested 1-min data ***")
+    print("*** All other 8 symbols: structural extension only, ZERO backtest ***")
+    print("*** Still DEMO ONLY — do not run any of this on real money ***")
