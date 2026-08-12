@@ -202,9 +202,8 @@ def _validate_hedging_mode() -> None:
     as a diagnostic since it's cheap and still useful context."""
     acc = mt5.account_info()
     if acc is None:
-        print(
-            "  WARNING: mt5.account_info() unavailable — cannot verify " "hedging mode."
-        )
+        print("  WARNING: mt5.account_info() unavailable — cannot verify "
+              "hedging mode.")
         return
     margin_mode = getattr(acc, "margin_mode", None)
     HEDGING = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", 2)
@@ -237,54 +236,64 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
     "XAUUSDm": {
         "pip": 1.0,
         "point_size": 0.001,
-        "offset": 3.0,  # $
-        "sl": 5.0,  # $
+        "offset": 3.0,       # $
+        "sl": 5.0,           # $
+        "risk_pct": 8.5714,  # of the 30% total budget — highest single share, only validated symbol
         "decimals": 2,
         "max_hold_seconds": 60.0,
     },
     "XAGUSDm": {
         "pip": 0.01,
         "point_size": 0.001,
-        "offset": 0.04,  # $ — UNCALIBRATED
-        "sl": 0.06,  # $ — UNCALIBRATED
+        "offset": 0.04,      # $ — UNCALIBRATED
+        "sl": 0.06,          # $ — UNCALIBRATED
+        "risk_pct": 8.5714,  # of the 30% total budget — matches gold, despite zero evidence behind this symbol
         "decimals": 3,
         "max_hold_seconds": 60.0,
     },
     "EURUSDm": {
         "pip": 0.0001,
         "point_size": 0.00001,
-        "offset": 0.0012,  # 12 pips
-        "sl": 0.0020,  # 20 pips
+        "offset": 0.0012,    # 12 pips
+        "sl": 0.0020,        # 20 pips
+        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
         "decimals": 5,
         "max_hold_seconds": 60.0,
     },
     "GBPUSDm": {
         "pip": 0.0001,
         "point_size": 0.00001,
-        "offset": 0.0012,  # 12 pips
-        "sl": 0.0020,  # 20 pips
+        "offset": 0.0012,    # 12 pips
+        "sl": 0.0020,        # 20 pips
+        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
         "decimals": 5,
         "max_hold_seconds": 60.0,
     },
     "USDJPYm": {
         "pip": 0.01,
         "point_size": 0.001,
-        "offset": 0.12,  # 12 pips
-        "sl": 0.20,  # 20 pips
+        "offset": 0.12,      # 12 pips
+        "sl": 0.20,          # 20 pips
+        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
         "decimals": 3,
         "max_hold_seconds": 60.0,
     },
     "USDCADm": {
         "pip": 0.0001,
         "point_size": 0.00001,
-        "offset": 0.0012,  # 12 pips
-        "sl": 0.0020,  # 20 pips
+        "offset": 0.0012,    # 12 pips
+        "sl": 0.0020,        # 20 pips
+        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
         "decimals": 5,
         "max_hold_seconds": 60.0,
     },
 }
 
-RISK_PCT = 14.1  # quarter-Kelly base, same as the other two news strategies
+RISK_PCT = 14.1  # fallback default only if a symbol's config is missing
+# risk_pct — every symbol in SYMBOL_CONFIG now sets its own (2026-08-12
+# allocation, scaled 2026-08-12 from an initial 14% total to 30%:
+# 8.57% XAU + 8.57% XAG + 3.21%×4 FX = 30% total, replacing the old
+# flat 14.1% applied independently to each symbol).
 MAGIC = 20260807  # unique to this strategy — must not collide with
 # straddle_strategy.py (20260716), news_confirm_strategy.py
 # (20260801), or news_reload_strategy.py (20260810)
@@ -318,7 +327,13 @@ class NewsSpikeStrategy:
         """Sizing pulled LIVE from the broker, not guessed. trade_tick_value
         / trade_tick_size gives $-per-1.0-price-unit-move per lot, already
         converted to account currency by MT5. Clamps to the symbol's real
-        volume_min/volume_max/volume_step."""
+        volume_min/volume_max/volume_step. Uses each symbol's own risk_pct
+        (see SYMBOL_CONFIG) rather than a flat global RISK_PCT — split
+        2026-08-12 per Joseph's allocation: 4% XAU, 4% XAG, 1.5% each for
+        the 4 FX pairs, scaled 2026-08-12 to a 30% total budget (up from an
+        initial 14%) instead of each symbol independently risking the
+        full 14.1% — well above this project's own quarter-Kelly ceiling,
+        Joseph's explicit choice."""
         cfg = SYMBOL_CONFIG[symbol]
         info = mt5.symbol_info(symbol)
         if info is None or not info.trade_tick_size:
@@ -326,7 +341,8 @@ class NewsSpikeStrategy:
             return 0.01
 
         value_per_unit_per_lot = info.trade_tick_value / info.trade_tick_size
-        risk_dollar = self._balance() * (RISK_PCT / 100.0)
+        risk_pct = cfg.get("risk_pct", RISK_PCT)
+        risk_dollar = self._balance() * (risk_pct / 100.0)
         raw_lot = risk_dollar / (cfg["sl"] * value_per_unit_per_lot)
 
         vol_min = info.volume_min or 0.01
@@ -337,7 +353,7 @@ class NewsSpikeStrategy:
             print(
                 f"  {symbol}: target risk implies {raw_lot:.2f} lots, "
                 f"clamped to broker max {vol_max:.2f} — actual $ risk on this "
-                f"trade will be LESS than the {RISK_PCT}% target."
+                f"trade will be LESS than the {risk_pct}% target."
             )
 
         lot = max(vol_min, min(raw_lot, vol_max))
@@ -512,9 +528,7 @@ class NewsSpikeStrategy:
                 {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket}
             )
             if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
-                actions.append(
-                    f"cancelled pending magic={order.magic} ticket={order.ticket}"
-                )
+                actions.append(f"cancelled pending magic={order.magic} ticket={order.ticket}")
 
         return "; ".join(actions) if actions else None
 
@@ -763,10 +777,7 @@ class NewsSpikeStrategy:
     def get_performance_by_symbol(self, lookback_days: int = 120) -> Dict[str, Any]:
         """Per-symbol breakdown — worth checking regularly since 5 of 6
         symbols are unvalidated."""
-        return {
-            sym: self.get_performance_summary(sym, lookback_days)
-            for sym in self.traded_symbols
-        }
+        return {sym: self.get_performance_summary(sym, lookback_days) for sym in self.traded_symbols}
 
     # ---------------------------------------------------------------- util
 
@@ -782,7 +793,7 @@ class NewsSpikeStrategy:
     def __repr__(self) -> str:
         return (
             f"NewsSpikeStrategy(symbols={self.traded_symbols}, "
-            f"events=[NFP,CPI,FOMC], risk_pct={RISK_PCT}% (quarter-Kelly, single-shot), "
+            f"events=[NFP,CPI,FOMC], risk_pct=per-symbol (XAU/XAG 8.57% each, FX 3.21% each, 30% total), "
             f"max_hold=60s, filter=None, one_shot_per_event=True, stateless=True, "
             f"validated=['XAUUSDm'], unvalidated={[s for s in SYMBOL_CONFIG if s != 'XAUUSDm']})"
         )
