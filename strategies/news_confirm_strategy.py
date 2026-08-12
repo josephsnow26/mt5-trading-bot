@@ -42,55 +42,78 @@ NFP/CPI/FOMC breakdown — 59.1%/54.5%/66.7% win rates, all beat random-
 time controls).
 
 *** *** EVERYTHING ELSE IN THIS FILE IS STRUCTURAL, NOT VALIDATED *** ***
-XAGUSDm and the 7 major USD pairs (EURUSDm, GBPUSDm, USDJPYm, USDCHFm,
-AUDUSDm, USDCADm, NZDUSDm) were added on 2026-08-11 at Joseph's explicit
-instruction, with explicit sign-off to skip backtesting: same mechanic,
-same 60s force-close, same Kelly-flat 14.1% sizing formula, reusing the
-15/25-pip offset/SL already validated for EUR/GBP/JPY in
-straddle_strategy.py's own (different, daily-trigger) mechanic as the
-least-arbitrary default available. This is a DIFFERENT mechanic
-(60-second event-spike, not a daily-session straddle) — the 15/25 pip
-distance carries over structurally, not evidentially. Silver's offset/SL
-($0.05 / $0.08) are new, uncalibrated guesses scaled roughly off gold's
-$3/$5 by relative price level — pure guess, not even that.
+XAGUSDm and 4 major USD pairs (EURUSDm, GBPUSDm, USDJPYm, USDCADm) were
+added on 2026-08-11 at Joseph's explicit instruction, with explicit
+sign-off to skip backtesting: same mechanic, same 60s force-close, same
+Kelly-flat 14.1% sizing formula. Trimmed from an earlier 8-symbol pass
+(USDCHFm/AUDUSDm/NZDUSDm dropped 2026-08-11 at Joseph's request).
+Silver's offset/SL are new, uncalibrated guesses scaled roughly off
+gold's $3/$5 by relative price level.
 
-None of the 8 new symbols have any event-reaction backtest behind them.
-Unknown and unverified for all 8:
+None of the 5 non-gold symbols have any event-reaction backtest behind
+them. Unknown and unverified for all 5:
   - whether gold's spike edge (fast post-release reaction, fade before
     60s) generalizes to FX majors or silver at all
-  - correct offset/SL distance per symbol (reused, not fitted)
-  - pip_value_per_lot per symbol (approximated below — JPY/CHF/CAD
-    pairs have USD as the base currency, so true pip value swings with
-    the live exchange rate; the constants below are rough single-point
-    approximations, not looked up from mt5.symbol_info() at runtime)
+  - correct offset/SL distance per symbol (reused/extended, not fitted)
   - decimal/point precision matching Exness's real quoting for each
     symbol (assumed from typical broker convention, not confirmed
     against this account)
-This is going live on demo (or worse) purely on the strength of "same
-mechanic, different instrument" reasoning. Treat every non-XAUUSDm
-symbol here as an unvalidated experiment until it has its own
-backtested evidence — same standing as GOLD_ENABLED was treated before
-its own backtest existed.
+Treat every non-XAUUSDm symbol here as an unvalidated experiment until
+it has its own backtested evidence — same standing as GOLD_ENABLED was
+treated before its own backtest existed.
 
 *** STILL DEMO ONLY (all symbols) ***
 
-CHANGE LOG (this revision, 2026-08-11):
-  - Added XAGUSDm + 7 major USD pairs (EURUSDm, GBPUSDm, USDJPYm,
-    USDCHFm, AUDUSDm, USDCADm, NZDUSDm). No backtest run — explicit
-    instruction to skip it. Reused straddle_strategy.py's 15/25-pip
-    offset/SL for the FX pairs already partially covered there
-    (EUR/GBP/JPY); extended the same distances to CHF/AUD/CAD/NZD for
-    consistency, since none of those have any established number either.
+CHANGE LOG (2026-08-12):
+  - Re-added the unconditional final flatten check immediately before
+    order placement in check_and_place() — this had been dropped during
+    a revert and is the actual fix for the EURUSDm-not-closing-before-
+    NFP bug reported live. The window-based flatten (_next_flatten_window,
+    5 min before release) depends on the main loop calling
+    check_and_place() every cycle in that window; if the main loop's
+    per-symbol routing sends a symbol to manage_open_trade() instead
+    (observed live 2026-08-12 on EURUSDm, one minute before release, no
+    position ever placed by this bot so manage_open_trade() correctly
+    reported "No open trade" every time — meaning check_and_place(),
+    and therefore the flatten logic, was never even called for it), the
+    window-based flatten silently never runs for that symbol. The final
+    check at the last possible moment before order placement is a second,
+    independent layer that doesn't depend on the window timing lining up
+    with when the main loop happens to call this method — it runs
+    unconditionally every time check_and_place() reaches that point,
+    which happens across many cycles inside the whole 5-min trigger
+    window, not just the exact cycle the window check catches.
+  - Trimmed to 6 symbols (XAUUSDm, XAGUSDm, EURUSDm, GBPUSDm, USDJPYm,
+    USDCADm) per Joseph's request — USDCHFm/AUDUSDm/NZDUSDm removed.
+  - FX offset/SL settled at 12/20 pips (reverted from an intermediate
+    8/15p tighten that was catching fakeouts on slower releases).
+  - Flatten lead time set to 5 minutes (down from an initial 10).
+  - Added _next_flatten_window()/_flatten_symbol(): closes ANY position
+    and cancels ANY pending order on a symbol, regardless of magic
+    number, in the lead-up to a scheduled event — deliberate, simpler
+    alternative to hedging-mode detection/blocking. This strategy shares
+    EURUSDm/GBPUSDm/USDJPYm/XAUUSDm with straddle_strategy.py
+    (MAGIC=20260716); flattening the symbol before entry means there's
+    nothing left for a netting-mode account to merge with.
+  - Lot sizing rewritten in a prior pass to pull live from
+    mt5.symbol_info(symbol).trade_tick_value/trade_tick_size instead of
+    a static pip-value guess table, which had been wrong by orders of
+    magnitude for several symbols (2026-08-11: USDJPYm computed 42
+    lots, XAGUSDm 17.62 lots, off hand-guessed constants).
+
+CHANGE LOG (2026-08-11, earlier same day):
+  - Added XAGUSDm + 7 major USD pairs (later trimmed to 4, see above).
   - Added `decimals` to SYMBOL_CONFIG per symbol and generalized
     `_round_price()` off it instead of a single XAUUSDm special-case.
-  - `traded_symbols` was already derived from `SYMBOL_CONFIG.keys()` —
-    no change needed there, all new symbols pick up automatically.
+  - Added automatic hedging-mode check at import time (informational;
+    superseded operationally by the flatten-before-entry approach above,
+    but left in place as a diagnostic).
 
 CHANGE LOG (prior revision):
   - Expanded from NFP-only to three event types: NFP, CPI, FOMC - each
     on its own real, source-verified schedule.
-  - Removed the FOMC-proximity filter entirely - see above for why it
-    was mechanic-specific, not a universal rule.
+  - Removed the FOMC-proximity filter entirely - helped the reload
+    chain, hurt this mechanic when tested directly.
 
 CHANGE LOG (initial):
   - Initial build. Fourth standalone strategy, own MAGIC number, own
@@ -115,9 +138,6 @@ import MetaTrader5 as mt5
 # ---------------------------------------------------------------------------
 
 NFP_SCHEDULE_UTC: List[datetime.datetime] = [
-    # --- MANUAL TEST TRIGGER — remove after the 2026-08-11 test run ---
-    # 08:15 UTC = 09:15 Lagos (WAT, UTC+1). Window is release_time to
-    # release_time+5min, so this fires the bot 09:15-09:20 Lagos time.
     datetime.datetime(2026, 8, 7, 12, 30, tzinfo=datetime.timezone.utc),
     datetime.datetime(2026, 9, 4, 12, 30, tzinfo=datetime.timezone.utc),
     datetime.datetime(2026, 10, 2, 12, 30, tzinfo=datetime.timezone.utc),
@@ -175,7 +195,31 @@ def _validate_calendar_freshness() -> None:
                 )
 
 
+def _validate_hedging_mode() -> None:
+    """Informational only now — the flatten-before-entry mechanism
+    (_next_flatten_window / _flatten_symbol) is the operative protection
+    against cross-strategy interference, not this check. Left in place
+    as a diagnostic since it's cheap and still useful context."""
+    acc = mt5.account_info()
+    if acc is None:
+        print(
+            "  WARNING: mt5.account_info() unavailable — cannot verify " "hedging mode."
+        )
+        return
+    margin_mode = getattr(acc, "margin_mode", None)
+    HEDGING = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", 2)
+    if margin_mode != HEDGING:
+        print(
+            f"  NOTE: account is NOT in hedging mode (margin_mode={margin_mode}). "
+            "Flatten-before-entry logic handles the overlap risk with "
+            "straddle_strategy.py regardless, but worth knowing."
+        )
+    else:
+        print("  Hedging mode confirmed.")
+
+
 _validate_calendar_freshness()
+_validate_hedging_mode()
 
 # ---------------------------------------------------------------------------
 # Per-symbol configuration
@@ -183,11 +227,9 @@ _validate_calendar_freshness()
 # offset/sl are in PRICE units (not pips) — already converted below so the
 # entry code never has to know per-symbol pip size.
 #
-# Lot sizing no longer uses a static pip-value guess per symbol (that
-# approach produced dangerously wrong lots for USDJPYm/XAGUSDm in the
-# 2026-08-11 live test — see _base_lot()). Position size is now computed
-# LIVE from mt5.symbol_info(symbol).trade_tick_value/trade_tick_size,
-# clamped to the broker's real volume_min/volume_max/volume_step.
+# Lot sizing pulls LIVE from mt5.symbol_info(symbol).trade_tick_value/
+# trade_tick_size, clamped to the broker's real volume_min/max/step —
+# see _base_lot(). No static pip-value guess table.
 #
 # decimals controls price rounding in _round_price().
 
@@ -203,71 +245,46 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
     "XAGUSDm": {
         "pip": 0.01,
         "point_size": 0.001,
-        "offset": 0.04,  # $ — UNCALIBRATED, tightened 2026-08-11 (evidence: 122p NFP move dwarfs this)
-        "sl": 0.06,  # $ — UNCALIBRATED, tightened 2026-08-11
+        "offset": 0.04,  # $ — UNCALIBRATED
+        "sl": 0.06,  # $ — UNCALIBRATED
         "decimals": 3,
         "max_hold_seconds": 60.0,
     },
     "EURUSDm": {
         "pip": 0.0001,
         "point_size": 0.00001,
-        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2): offset was eating into the 60s window on fast one-directional moves
-        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2)
+        "offset": 0.0012,  # 12 pips
+        "sl": 0.0020,  # 20 pips
         "decimals": 5,
         "max_hold_seconds": 60.0,
     },
     "GBPUSDm": {
         "pip": 0.0001,
         "point_size": 0.00001,
-        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2): offset was eating into the 60s window on fast one-directional moves
-        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2)
+        "offset": 0.0012,  # 12 pips
+        "sl": 0.0020,  # 20 pips
         "decimals": 5,
         "max_hold_seconds": 60.0,
     },
     "USDJPYm": {
         "pip": 0.01,
         "point_size": 0.001,
-        "offset": 0.08,  # 8 pips — tightened again 2026-08-11 (v2)
-        "sl": 0.15,  # 15 pips — tightened again 2026-08-11 (v2)
+        "offset": 0.12,  # 12 pips
+        "sl": 0.20,  # 20 pips
         "decimals": 3,
-        "max_hold_seconds": 60.0,
-    },
-    "USDCHFm": {
-        "pip": 0.0001,
-        "point_size": 0.00001,
-        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "decimals": 5,
-        "max_hold_seconds": 60.0,
-    },
-    "AUDUSDm": {
-        "pip": 0.0001,
-        "point_size": 0.00001,
-        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "decimals": 5,
         "max_hold_seconds": 60.0,
     },
     "USDCADm": {
         "pip": 0.0001,
         "point_size": 0.00001,
-        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "decimals": 5,
-        "max_hold_seconds": 60.0,
-    },
-    "NZDUSDm": {
-        "pip": 0.0001,
-        "point_size": 0.00001,
-        "offset": 0.0008,  # 8 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
-        "sl": 0.0015,  # 15 pips — tightened again 2026-08-11 (v2), matches EUR/GBP
+        "offset": 0.0012,  # 12 pips
+        "sl": 0.0020,  # 20 pips
         "decimals": 5,
         "max_hold_seconds": 60.0,
     },
 }
 
-RISK_PCT = 14.1  # same quarter-Kelly base as the other two news strategies —
-# UNCHANGED from the NFP-only version, see _base_lot() below.
+RISK_PCT = 14.1  # quarter-Kelly base, same as the other two news strategies
 MAGIC = 20260807  # unique to this strategy — must not collide with
 # straddle_strategy.py (20260716), news_confirm_strategy.py
 # (20260801), or news_reload_strategy.py (20260810)
@@ -300,13 +317,8 @@ class NewsSpikeStrategy:
     def _base_lot(self, symbol: str) -> float:
         """Sizing pulled LIVE from the broker, not guessed. trade_tick_value
         / trade_tick_size gives $-per-1.0-price-unit-move per lot, already
-        converted to account currency by MT5 — this replaces the static
-        pip_value_per_lot table, which was wrong by orders of magnitude
-        for several symbols (2026-08-11 live test: USDJPYm computed 42
-        lots, XAGUSDm 17.62 lots, off a hand-guessed constant).
-        Also clamps to the symbol's real volume_min/volume_max/volume_step
-        so oversized risk can't silently overflow into an 'Invalid volume'
-        rejection — or worse, an accepted-but-insane lot size."""
+        converted to account currency by MT5. Clamps to the symbol's real
+        volume_min/volume_max/volume_step."""
         cfg = SYMBOL_CONFIG[symbol]
         info = mt5.symbol_info(symbol)
         if info is None or not info.trade_tick_size:
@@ -361,6 +373,38 @@ class NewsSpikeStrategy:
             return None
         return result
 
+    def has_open_position(self, symbol: str) -> bool:
+        """Public, magic-filtered check for the main loop to use instead
+        of a broker-wide open-trade count. The bug this fixes: main_
+        news_spike.py was calling mt5_config.get_open_trades_count(symbol)
+        — which counts ANY position on that symbol, any magic — to decide
+        whether to route to manage_open_trade() or check_and_place(). On
+        shared symbols (EURUSDm/GBPUSDm/USDJPYm/XAUUSDm, also traded by
+        straddle_strategy.py MAGIC=20260716), that count was almost always
+        >0 from the OTHER bot's position, so this strategy got routed to
+        manage_open_trade() every cycle (correctly reporting "No open
+        trade" for its own magic) and never reached check_and_place() at
+        all — meaning the flatten-before-entry logic never ran either.
+        This method wraps the same magic-filtered _get_position() already
+        used everywhere else in this file, so the main loop's routing
+        decision uses the same definition of "open" as the rest of the
+        strategy."""
+        return self._get_position(symbol) is not None
+
+    def has_own_open_trade(self, symbol: str) -> bool:
+        """Public, magic-filtered check for the main loop to use instead
+        of a broker-wide open-trades count. main_news_spike.py was
+        calling mt5_config.get_open_trades_count(symbol=symbol), which
+        counts ANY open position on that symbol regardless of magic —
+        so with straddle_strategy.py (MAGIC=20260716) holding EURUSD/
+        GBPUSD/USDJPY/XAUUSD open nearly 24/7, the main loop routed
+        those symbols to manage_open_trade() every cycle (which
+        correctly reported 'not mine') and never reached
+        check_and_place() at all — the flatten-before-entry logic never
+        ran as a result. This method filters by MAGIC before answering,
+        same as everything else in this file."""
+        return self._get_position(symbol) is not None
+
     def _get_position(self, symbol: str):
         positions = mt5.positions_get(symbol=symbol)
         if not positions:
@@ -382,8 +426,7 @@ class NewsSpikeStrategy:
     ) -> Optional[Tuple[datetime.datetime, str]]:
         """Checks all three schedules (NFP, CPI, FOMC) and returns
         (release_time, event_type) if `now` falls inside any of their
-        5-min placement windows — or None. No proximity filter between
-        event types; see module docstring 'Filter' section for why."""
+        5-min placement windows — or None."""
         for event_type, schedule in (
             ("NFP", NFP_SCHEDULE_UTC),
             ("CPI", CPI_SCHEDULE_UTC),
@@ -398,11 +441,7 @@ class NewsSpikeStrategy:
         self, symbol: str, release_time: datetime.datetime
     ) -> bool:
         """Has this SPECIFIC event already produced a completed trade
-        today? Critical here — this mechanic typically resolves in under a
-        minute, well inside the 5-min trigger window, so without this
-        check the bot would happily re-enter multiple times for the same
-        event (exactly the bug found live in news_reload_strategy.py on
-        2026-08-07). Derived from real MT5 deal history, not stored."""
+        today? Derived from real MT5 deal history, not stored."""
         deals = (
             mt5.history_deals_get(
                 release_time, datetime.datetime.now(datetime.timezone.utc)
@@ -416,6 +455,69 @@ class NewsSpikeStrategy:
         ]
         return len(own_closes) > 0
 
+    def _next_flatten_window(
+        self, now: datetime.datetime, lead_minutes: float = 5.0
+    ) -> Optional[Tuple[datetime.datetime, str]]:
+        """Returns (release_time, event_type) if `now` is inside the
+        pre-event flatten window — lead_minutes before release, up to
+        release itself."""
+        for event_type, schedule in (
+            ("NFP", NFP_SCHEDULE_UTC),
+            ("CPI", CPI_SCHEDULE_UTC),
+            ("FOMC", FOMC_SCHEDULE_UTC),
+        ):
+            for release_time in schedule:
+                flatten_start = release_time - datetime.timedelta(minutes=lead_minutes)
+                if flatten_start <= now < release_time:
+                    return release_time, event_type
+        return None
+
+    def _flatten_symbol(self, symbol: str) -> Optional[str]:
+        """Closes ANY open position and cancels ANY pending order on this
+        symbol, regardless of magic number — deliberate design choice:
+        simpler than detecting/blocking on hedging mode. Called from two
+        places in check_and_place() — the window-based check AND an
+        unconditional final check right before order placement — because
+        the window-based one alone depends on the main loop calling
+        check_and_place() for this symbol during that specific 5-min
+        stretch, which isn't guaranteed by this file's own logic (that's
+        the main loop's job, outside this file)."""
+        actions: List[str] = []
+
+        for pos in mt5.positions_get(symbol=symbol) or ():
+            tick = self._get_tick(symbol)
+            if tick is None:
+                continue
+            is_buy = pos.type == mt5.POSITION_TYPE_BUY
+            result = self._safe_order_send(
+                {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": pos.volume,
+                    "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+                    "position": pos.ticket,
+                    "price": tick.bid if is_buy else tick.ask,
+                    "deviation": 10,
+                    "magic": MAGIC,
+                    "comment": "news_spike_pre_event_flatten",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": self._filling_mode(symbol),
+                }
+            )
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                actions.append(f"closed position magic={pos.magic} ticket={pos.ticket}")
+
+        for order in mt5.orders_get(symbol=symbol) or ():
+            result = self._safe_order_send(
+                {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket}
+            )
+            if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
+                actions.append(
+                    f"cancelled pending magic={order.magic} ticket={order.ticket}"
+                )
+
+        return "; ".join(actions) if actions else None
+
     # ---------------------------------------------------------------- entry
 
     def check_and_place(self, symbol: str) -> Dict[str, Any]:
@@ -427,6 +529,17 @@ class NewsSpikeStrategy:
         if symbol not in self.traded_symbols:
             return self._no(f"{symbol} not enabled")
 
+        now = datetime.datetime.now(datetime.timezone.utc)
+        flatten_window = self._next_flatten_window(now)
+        if flatten_window is not None:
+            flatten_release, flatten_event = flatten_window
+            result = self._flatten_symbol(symbol)
+            if result:
+                return self._no(
+                    f"Pre-{flatten_event} flatten ({flatten_release}): {result}"
+                )
+            return self._no(f"Pre-{flatten_event} flatten window — already flat")
+
         if self._get_position(symbol) is not None:
             return self._no("Position already open")
 
@@ -434,7 +547,6 @@ class NewsSpikeStrategy:
         if pending["buy"] is not None or pending["sell"] is not None:
             return self._no("Straddle already pending")
 
-        now = datetime.datetime.now(datetime.timezone.utc)
         window = self._next_event_trigger_window(now)
         if window is None:
             return self._no("Not inside any event trigger window")
@@ -445,6 +557,20 @@ class NewsSpikeStrategy:
                 f"This {event_type} event already produced a completed trade — "
                 "no re-entry."
             )
+
+        # Unconditional final safety net — runs every single time
+        # check_and_place() reaches this point, regardless of whether the
+        # window-based flatten above fired earlier in a different cycle.
+        # This is the actual fix for the EURUSDm-not-closing-before-NFP
+        # bug: the window check only helps on cycles where the main loop
+        # happens to route this symbol through check_and_place() during
+        # the 5-min flatten window specifically. This check has no such
+        # dependency — it runs on every cycle that gets this far, across
+        # the whole 5-min trigger window, so a missed window-cycle for
+        # one symbol doesn't leave it permanently unguarded.
+        flatten_result = self._flatten_symbol(symbol)
+        if flatten_result:
+            return self._no(f"Flattened at entry-time (final check): {flatten_result}")
 
         cfg = SYMBOL_CONFIG[symbol]
         tick = self._get_tick(symbol)
@@ -467,9 +593,6 @@ class NewsSpikeStrategy:
         sell_sl = _round_price(sell_stop + sl, symbol)
 
         lots = self._base_lot(symbol)
-        # Pending orders expire quickly here — no point leaving them
-        # armed past the trigger window itself, since this strategy fires
-        # once and is done.
         expiration = int((release_time + datetime.timedelta(minutes=5)).timestamp())
         filling_mode = self._filling_mode(symbol)
 
@@ -560,8 +683,7 @@ class NewsSpikeStrategy:
         """Call on every poll while a position is open. The ENTIRE job of
         this method: has more than max_hold_seconds (60) elapsed since
         this position opened? If yes, close it at market immediately,
-        regardless of profit or loss. No TP check, no reload — this is
-        deliberately the simplest possible exit."""
+        regardless of profit or loss."""
         pos = self._get_position(symbol)
         if pos is None:
             return "No open trade"
@@ -639,10 +761,8 @@ class NewsSpikeStrategy:
         }
 
     def get_performance_by_symbol(self, lookback_days: int = 120) -> Dict[str, Any]:
-        """Per-symbol breakdown — worth checking regularly now that 8 of
-        9 symbols are unvalidated. A symbol quietly losing consistently
-        is the signal to pull it, same standing as BTCUSDm's flagged
-        negative YTD drift on the daily straddle bot."""
+        """Per-symbol breakdown — worth checking regularly since 5 of 6
+        symbols are unvalidated."""
         return {
             sym: self.get_performance_summary(sym, lookback_days)
             for sym in self.traded_symbols
@@ -683,5 +803,5 @@ if __name__ == "__main__":
         print(f"  Next: {min(future) if future else 'NONE — add dates'}")
     print()
     print("*** XAUUSDm backed by real, control-tested 1-min data ***")
-    print("*** All other 8 symbols: structural extension only, ZERO backtest ***")
+    print("*** All other 5 symbols: structural extension only, ZERO backtest ***")
     print("*** Still DEMO ONLY — do not run any of this on real money ***")

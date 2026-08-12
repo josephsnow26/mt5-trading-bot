@@ -8,8 +8,12 @@ import os
 
 def reload_decouple():
     KEYS = [
-        "MT5_USERNAME", "MT5_PASSWORD", "MT5_SERVER",
-        "MT5_USERNAME_TRIAL", "MT5_PASSWORD_TRIAL", "MT5_SERVER_TRIAL",
+        "MT5_USERNAME",
+        "MT5_PASSWORD",
+        "MT5_SERVER",
+        "MT5_USERNAME_TRIAL",
+        "MT5_PASSWORD_TRIAL",
+        "MT5_SERVER_TRIAL",
         "MT5_PATHWAY",
     ]
     for k in KEYS:
@@ -33,8 +37,8 @@ def sleep_until_next_30sec():
 
 reload_decouple()
 
-LIVE = False   # NOT backtested at all — see news_spike_strategy.py's
-               # module docstring "DATA LIMITATION" section. Demo only.
+LIVE = False  # NOT backtested at all — see news_spike_strategy.py's
+# module docstring "DATA LIMITATION" section. Demo only.
 
 # Fourth standalone process, own magic number, no shared loop with
 # straddle_strategy.py, news_confirm_strategy.py, or news_reload_strategy.py.
@@ -45,9 +49,9 @@ def main():
     # ── MT5 ──────────────────────────────────────────────────────────────
     mt5_config = MetaTraderConfig()
     mt5_settings = {
-        "username":    config("MT5_USERNAME"      if LIVE else "MT5_USERNAME_TRIAL"),
-        "password":    config("MT5_PASSWORD"      if LIVE else "MT5_PASSWORD_TRIAL"),
-        "server":      config("MT5_SERVER"        if LIVE else "MT5_SERVER_TRIAL"),
+        "username": config("MT5_USERNAME" if LIVE else "MT5_USERNAME_TRIAL"),
+        "password": config("MT5_PASSWORD" if LIVE else "MT5_PASSWORD_TRIAL"),
+        "server": config("MT5_SERVER" if LIVE else "MT5_SERVER_TRIAL"),
         "mt5_pathway": config("MT5_PATHWAY"),
     }
 
@@ -77,9 +81,18 @@ def main():
             if pending_status not in ("No pending straddle", "Pending"):
                 print(f"   {pending_status}")
 
-            open_trades = mt5_config.get_open_trades_count(symbol=symbol)
-
-            if open_trades > 0:
+            # FIXED 2026-08-12: was mt5_config.get_open_trades_count(symbol=symbol),
+            # which counts ANY open position on this symbol regardless of magic
+            # number — including straddle_strategy.py's (MAGIC=20260716) overnight
+            # positions on the 4 shared symbols (EURUSDm, GBPUSDm, USDJPYm,
+            # XAUUSDm). That meant this loop routed those symbols to
+            # manage_open_trade() on every cycle whenever the daily bot had a
+            # position open — which correctly reported "not mine" every time —
+            # and check_and_place() (where the flatten-before-entry logic lives)
+            # never ran for them at all. has_own_open_trade() filters by this
+            # strategy's own MAGIC before answering, same as every other read
+            # inside news_spike_strategy.py.
+            if strategy.has_own_open_trade(symbol):
                 status = strategy.manage_open_trade(symbol)
                 print(f"   {status}")
                 continue
