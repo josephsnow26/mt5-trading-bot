@@ -161,6 +161,15 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
         "trigger_minute": 0,
         "cancel_hour": 23,
     },
+    "XAGUSDm": {
+        "trigger_hour": 14,  # UTC
+        "offset": 0.06,
+        "sl": 0.12,
+        "trail": 0.09,
+        "be_trigger": 0.12,
+        "risk_pct": 0.01,  # start conservative, bump once it's proven live
+        "friday_cap_hour": 20,  # same Friday 20:00 UTC hard close as XAU/BTC
+    },
 }
 
 # Gold's out-of-sample win rate improved 56.4% -> 64.1% and held up after
@@ -256,8 +265,7 @@ class StraddleStrategy:
         self.traded_symbols: List[str] = [
             s
             for s in SYMBOL_CONFIG
-            if (s != "XAUUSDm" or GOLD_ENABLED)
-            and (s != "BTCUSDm" or BTC_ENABLED)
+            if (s != "XAUUSDm" or GOLD_ENABLED) and (s != "BTCUSDm" or BTC_ENABLED)
         ]
 
     # ---------------------------------------------------------------- balance

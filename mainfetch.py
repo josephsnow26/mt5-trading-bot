@@ -18,9 +18,9 @@ print("MT5 connected:", mt5.account_info().server)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SYMBOL    = "XAGUSDm"
-TIMEFRAME = mt5.TIMEFRAME_M1
+TIMEFRAME = mt5.TIMEFRAME_M15
 
-t = "1m"
+t = "15m"
 
 # ── Select symbol ─────────────────────────────────────────────────────────────
 if not mt5.symbol_select(SYMBOL, True):
