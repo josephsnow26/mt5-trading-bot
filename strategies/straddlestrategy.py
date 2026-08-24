@@ -71,8 +71,52 @@ adaptive per-symbol deadline applied — no silently skipped days):
     actual account as soon as possible — if it isn't 1.0, every BTC
     position size placed until this is checked is silently wrong, not
     crash-wrong, so it won't announce itself as a problem on its own.
+  XAGUSDm @ 14:00 UTC : SILVER_ENABLED=True at Joseph's explicit
+    instruction. ***CONTRACT SIZE UNVERIFIED*** — same situation as BTC
+    above. pip_value_per_lot() assumes 1.0 lot = 5000 oz ($1 move = $5000
+    P&L per 1.0 lot), a common XAGUSD contract size but NOT confirmed
+    against Exness's real XAGUSDm spec. Check
+    `mt5.symbol_info("XAGUSDm").trade_contract_size` on the actual account
+    ASAP — if it isn't 5000, every silver position size placed until this
+    is checked is silently wrong in the same way the BTC one could be.
 
 CHANGE LOG (this revision):
+  - Fixed XAGUSDm's SYMBOL_CONFIG entry, which was missing required keys
+    ("pip", "cancel_hour") and carried two dead keys that nothing in this
+    file ever reads ("risk_pct" — self.risk_pct is the only one used;
+    "friday_cap_hour" — WEEKLY_CLOSE_HOUR is the only one used). The
+    missing "cancel_hour" crashed check_and_place() with a KeyError on
+    first live call. The missing "pip" was the more dangerous bug: it
+    didn't crash — _pip() silently fell back to the FX default of 0.0001,
+    which would have multiplied XAGUSDm's USD-denominated offset/sl/trail
+    values (0.06, 0.12, 0.09) down to near-zero, placing both straddle
+    legs essentially on top of the live price. XAGUSDm now carries
+    "pip": 1.0, same as XAUUSDm/BTCUSDm, since its offset/sl/trail values
+    are already expressed directly in USD.
+  - Added XAGUSDm to WEEKEND_CLOSED_SYMBOLS — spot silver closes for the
+    weekend like gold and FX, so without this a Friday fill would ride
+    through to Monday's trigger deadline instead of hard-closing Friday
+    at WEEKLY_CLOSE_HOUR, taking on the exact weekend gap risk that set
+    exists to prevent.
+  - Added SILVER_ENABLED / SILVER_MIN_BALANCE, mirroring the existing
+    GOLD_ENABLED/BTC_ENABLED gating pattern, and added XAGUSDm to the
+    traded_symbols gating in __init__. SILVER_ENABLED=True at Joseph's
+    explicit instruction — contract-size assumption unverified, see the
+    backtest summary note above.
+  - Added an XAGUSDm branch to _pip_value_per_lot(); without it silver
+    would have silently fallen through to the generic $10/pip FX default,
+    which is wrong for a USD-denominated symbol — the same class of
+    silent-fallback bug the missing "pip" config key had.
+  - Added BTCUSDm to SYMBOL_CONFIG and WEEKEND_CLOSED_SYMBOLS to make the
+    Friday weekly-close cap apply only to symbols that actually close on
+    weekends — BTC traded 7 days/week in the backtest data, so
+    force-closing it every Friday would cut off real weekend price action
+    for no matching gap-risk reason. BTC_ENABLED=True at Joseph's explicit
+    request to test now — contract-size assumption unverified, see the
+    backtest summary note above.
+  - XAUUSDm confirmed back at its validated trigger_hour=1/trigger_minute=0
+    (a brief 08:30 test config was considered and reverted before this
+    revision — BTC was the one that needed enabling, not gold's hour).
   - Added _get_tick(symbol): every tick read in this file now goes through
     this one helper, which calls mt5.symbol_select(symbol, True) before
     mt5.symbol_info_tick(symbol). Root cause of the 2026-07-21 GBPUSDm
@@ -87,16 +131,6 @@ CHANGE LOG (this revision):
     used to call mt5.symbol_info_tick() directly (check_and_place,
     _close_position_at_market, manage_open_trade) rather than only
     patching the one that broke.
-  - Added BTCUSDm to SYMBOL_CONFIG and WEEKEND_CLOSED_SYMBOLS to make the
-    Friday weekly-close cap apply only to symbols that actually close on
-    weekends — BTC traded 7 days/week in the backtest data, so
-    force-closing it every Friday would cut off real weekend price action
-    for no matching gap-risk reason. BTC_ENABLED=True at Joseph's explicit
-    request to test now — contract-size assumption unverified, see the
-    backtest summary note above.
-  - XAUUSDm confirmed back at its validated trigger_hour=1/trigger_minute=0
-    (a brief 08:30 test config was considered and reverted before this
-    revision — BTC was the one that needed enabling, not gold's hour).
 """
 
 from __future__ import annotations
@@ -162,13 +196,14 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
         "cancel_hour": 23,
     },
     "XAGUSDm": {
-        "trigger_hour": 14,  # UTC
+        "pip": 1.0,  # USD-denominated like XAUUSDm/BTCUSDm, not pip-multiples
         "offset": 0.06,
         "sl": 0.12,
         "trail": 0.09,
         "be_trigger": 0.12,
-        "risk_pct": 0.01,  # start conservative, bump once it's proven live
-        "friday_cap_hour": 20,  # same Friday 20:00 UTC hard close as XAU/BTC
+        "trigger_hour": 14,
+        "trigger_minute": 0,
+        "cancel_hour": 22,
     },
 }
 
@@ -189,6 +224,15 @@ GOLD_MIN_BALANCE = 2000.0
 BTC_ENABLED = True
 BTC_MIN_BALANCE = 600.0  # SL($600) * unit_value(1.0) * min_lot(0.01) / 1% target risk
 
+# XAGUSDm's contract-size assumption is UNVERIFIED against the real Exness
+# spec — see _pip_value_per_lot() below. SILVER_ENABLED=True at Joseph's
+# explicit instruction to enable now. Check
+# mt5.symbol_info("XAGUSDm").trade_contract_size on the actual account
+# ASAP — if the guess below is wrong, every silver position size placed
+# until this is checked is silently wrong, same failure mode as BTC.
+SILVER_ENABLED = True
+SILVER_MIN_BALANCE = 300.0  # SL($0.12) * assumed_unit_value($5000/lot) * min_lot(0.01) / 1% target risk
+
 MAGIC = 20260716  # unique to this strategy, keeps it from colliding with the M15 bot
 
 DEADLINE_BUFFER_HOURS = 1  # how far ahead of the NEXT trigger hour a trade
@@ -203,12 +247,12 @@ WEEKLY_CLOSE_HOUR = 20  # UTC, Friday — hard cap so no position ever rides
 # below would cut off real weekend price action for no matching gap-risk
 # reason. If BTC's actual broker hours ever turn out to include a real
 # weekend closure, move it into this set.
-WEEKEND_CLOSED_SYMBOLS = {"EURUSDm", "USDJPYm", "GBPUSDm", "XAUUSDm"}
+WEEKEND_CLOSED_SYMBOLS = {"EURUSDm", "USDJPYm", "GBPUSDm", "XAUUSDm", "XAGUSDm"}
 
 # Cross-pair circuit breaker
 BREAKER_LOSS_STREAK = 2
 BREAKER_MIN_SYMBOLS_FLAGGED = 2
-BREAKER_MAX_PAUSE_HOURS = 96  # hard fallback: never pause longer than this,
+BREAKER_MAX_PAUSE_HOURS = 10  # hard fallback: never pause longer than this,
 # regardless of streak state — see _is_paused()
 
 
@@ -219,16 +263,19 @@ def _pip(symbol: str) -> float:
 def _pip_value_per_lot(symbol: str, price: float) -> float:
     """USD value of a 1-unit move at 1.0 lot. Fixed $10/pip for USD-quoted
     FX pairs, dynamic for USDJPY (JPY-quoted), $100/point for XAUUSD
-    (1.0 lot = 100 oz), and $1/point for BTCUSDm — THAT LAST ONE ASSUMES
-    1.0 lot = 1 BTC, which is UNVERIFIED against the real broker contract
-    spec. See the module docstring's BTCUSDm note before enabling
-    BTC_ENABLED."""
+    (1.0 lot = 100 oz), $1/point for BTCUSDm — THAT ONE ASSUMES 1.0 lot =
+    1 BTC, UNVERIFIED against the real broker contract spec — and
+    $5000/point for XAGUSDm, which ASSUMES 1.0 lot = 5000 oz, also
+    UNVERIFIED. See the module docstring's notes before trusting position
+    sizes on either symbol."""
     if symbol == "USDJPYm":
         return 1000.0 / price
     if symbol == "XAUUSDm":
         return 100.0
     if symbol == "BTCUSDm":
         return 1.0
+    if symbol == "XAGUSDm":
+        return 5000.0
     return 10.0
 
 
@@ -239,6 +286,8 @@ def _round_price(price: float, symbol: str) -> float:
         return round(price, 2)
     if symbol == "BTCUSDm":
         return round(price, 2)
+    if symbol == "XAGUSDm":
+        return round(price, 3)
     return round(price, 5)
 
 
@@ -265,7 +314,9 @@ class StraddleStrategy:
         self.traded_symbols: List[str] = [
             s
             for s in SYMBOL_CONFIG
-            if (s != "XAUUSDm" or GOLD_ENABLED) and (s != "BTCUSDm" or BTC_ENABLED)
+            if (s != "XAUUSDm" or GOLD_ENABLED)
+            and (s != "BTCUSDm" or BTC_ENABLED)
+            and (s != "XAGUSDm" or SILVER_ENABLED)
         ]
 
     # ---------------------------------------------------------------- balance
@@ -903,6 +954,8 @@ if __name__ == "__main__":
                 reason = " (disabled: GOLD_ENABLED=False)"
             elif sym == "BTCUSDm":
                 reason = " (disabled: BTC_ENABLED=False — contract size unverified)"
+            elif sym == "XAGUSDm":
+                reason = " (disabled: SILVER_ENABLED=False — contract size unverified)"
         print(
             f"  {sym}: trigger={cfg['trigger_hour']:02d}:{cfg.get('trigger_minute',0):02d} UTC  "
             f"cancel={cfg['cancel_hour']:02d}:00 UTC  "
