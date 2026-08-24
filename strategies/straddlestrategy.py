@@ -231,7 +231,9 @@ BTC_MIN_BALANCE = 600.0  # SL($600) * unit_value(1.0) * min_lot(0.01) / 1% targe
 # ASAP — if the guess below is wrong, every silver position size placed
 # until this is checked is silently wrong, same failure mode as BTC.
 SILVER_ENABLED = True
-SILVER_MIN_BALANCE = 300.0  # SL($0.12) * assumed_unit_value($5000/lot) * min_lot(0.01) / 1% target risk
+SILVER_MIN_BALANCE = (
+    300.0  # SL($0.12) * assumed_unit_value($5000/lot) * min_lot(0.01) / 1% target risk
+)
 
 MAGIC = 20260716  # unique to this strategy, keeps it from colliding with the M15 bot
 
