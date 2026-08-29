@@ -17,7 +17,7 @@ if not mt5.initialize(
 print("MT5 connected:", mt5.account_info().server)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SYMBOL    = "XAGUSDm"
+SYMBOL    = "US30m"
 TIMEFRAME = mt5.TIMEFRAME_M15
 
 t = "15m"
@@ -37,6 +37,11 @@ if info is None:
 
 print(f"Symbol OK: {SYMBOL}")
 print(f"Digits: {info.digits}")
+print("contract_size:", info.trade_contract_size)
+print("tick_value:", info.trade_tick_value)
+print("tick_size:", info.trade_tick_size)
+print("point:", info.point)
+print("digits:", info.digits)
 
 # ── Check what history is available ──────────────────────────────────────────
 # First try: just grab the last 50000 bars — simplest approach
@@ -49,7 +54,7 @@ if rates is None or len(rates) == 0:
     # Second try: use copy_rates_range with smaller range
     print("\nTrying copy_rates_range with 2025 only...")
     START = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    END   = datetime(2026, 8, 11, tzinfo=timezone.utc)
+    END   = datetime(2026, 8, 25, tzinfo=timezone.utc)
     rates = mt5.copy_rates_range(SYMBOL, TIMEFRAME, START, END)
 
     if rates is None or len(rates) == 0:

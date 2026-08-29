@@ -18,10 +18,10 @@ def reload_decouple():
     AutoConfig._instances = {}
 
 
-def sleep_until_next_5min():
+def sleep_until_next_30s():
     now = datetime.now(timezone.utc)
-    seconds_past = (now.minute % 5) * 60 + now.second
-    seconds_to_wait = (5 * 60) - seconds_past
+    seconds_past = now.second % 30
+    seconds_to_wait = 30 - seconds_past
     time.sleep(seconds_to_wait)
 
 
@@ -64,11 +64,28 @@ def main():
     # there is nothing to rebuild after a restart.
 
     # ── Main loop ─────────────────────────────────────────────────────────
+    # Polling interval: 5min -> 1min -> 30s across this session, at Joseph's
+    # request, purely for tighter OCO-fill detection latency (how fast the
+    # bot notices a fill and cancels the leftover leg via
+    # manage_pending_orders() below). This does NOT change entry logic —
+    # check_and_place() still only fires exactly at cfg['trigger_hour']:00
+    # (minute-exact match), so a 30s loop hits that same instant a 5-minute
+    # loop would, just with far less worst-case delay noticing a fill in
+    # between. It also does NOT touch the tight-offset backtest question
+    # (USTECm/US30m offset dual-touch ambiguity) — that's a historical-data
+    # resolution problem a live poll rate can't fix; MT5 resolves real
+    # fills tick-by-tick regardless of how often this loop checks in.
+    #
+    # 30s means this loop now runs at the same cadence as news_spike_
+    # strategy.py's own poll rate — worth knowing since that bot's 60s
+    # force-close logic assumes it gets checked roughly every 30s to stay
+    # inside its own timing window. This file and that one still run as
+    # separate processes; nothing here changes that.
     while True:
         now = datetime.now(timezone.utc)
 
         print("=" * 55)
-        print(f"{now.strftime('%A %d %B %Y — %H:%M UTC')}")
+        print(f"{now.strftime('%A %d %B %Y — %H:%M:%S UTC')}")
         print("=" * 55)
 
         for symbol in strategy.traded_symbols:
@@ -126,7 +143,7 @@ def main():
             # atomically, so there's nothing further to execute here.
 
         print("\nCycle done")
-        sleep_until_next_5min()
+        sleep_until_next_30s()
 
 
 if __name__ == "__main__":
