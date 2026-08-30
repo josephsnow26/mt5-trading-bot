@@ -50,19 +50,43 @@ Kelly-flat 14.1% sizing formula. Trimmed from an earlier 8-symbol pass
 Silver's offset/SL are new, uncalibrated guesses scaled roughly off
 gold's $3/$5 by relative price level.
 
-None of the 5 non-gold symbols have any event-reaction backtest behind
-them. Unknown and unverified for all 5:
+XCUUSDm (copper) was added on 2026-08-30, same basis as XAGUSDm/FX —
+Joseph's explicit instruction, explicit sign-off to skip full
+validation. Unlike the others, it has a single-event data point behind
+it: NFP 2026-08-07 12:30 UTC, tested on real 1-min XCUUSDm data. Buy
+leg filled and rode a clean spike to +$29.89/lot (12/20pt offset/SL)
+with no SL touch before the 60s force-close. One event is an anecdote,
+not a backtest — treat this exactly like XAGUSDm/the FX pairs: zero
+statistical validation, no random-time control, no year-over-year
+check. The FOMC leg of that same session (2026-07-29 18:00 UTC)
+couldn't be tested at all — the supplied CSV had a hard data gap
+covering the entire decision window.
+
+None of the 6 non-gold symbols have any event-reaction backtest behind
+them. Unknown and unverified for all 6:
   - whether gold's spike edge (fast post-release reaction, fade before
-    60s) generalizes to FX majors or silver at all
+    60s) generalizes to FX majors, silver, or copper at all
   - correct offset/SL distance per symbol (reused/extended, not fitted)
   - decimal/point precision matching Exness's real quoting for each
     symbol (assumed from typical broker convention, not confirmed
-    against this account)
+    against this account) — XCUUSDm confirmed live 2026-08-30:
+    digits=2, contract_size=1.0, tick_value=0.01, tick_size=0.01
+  - real volume_min/volume_max/volume_step for XCUUSDm — not yet
+    confirmed, _base_lot() will clamp to whatever the broker actually
+    returns at runtime
 Treat every non-XAUUSDm symbol here as an unvalidated experiment until
 it has its own backtested evidence — same standing as GOLD_ENABLED was
 treated before its own backtest existed.
 
 *** STILL DEMO ONLY (all symbols) ***
+
+CHANGE LOG (2026-08-30):
+  - Added XCUUSDm (copper), risk_pct=3.2143% (same share as each FX
+    pair). Offset=12.0 / SL=20.0 (price units, digits=2) — carried over
+    from the single-event NFP backtest, not independently fitted to
+    copper's own volatility. Total budget across all 7 symbols is now
+    33.2143% (was 30%) — unchanged unless/until Joseph asks for a
+    rebalance.
 
 CHANGE LOG (2026-08-12):
   - Re-added the unconditional final flatten check immediately before
@@ -251,6 +275,19 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
         "decimals": 3,
         "max_hold_seconds": 60.0,
     },
+    "XCUUSDm": {
+        "pip": 0.01,
+        "point_size": 0.01,
+        "offset": 12.0,      # price units — carried over from the single NFP
+                              # 2026-08-07 backtest ("scaled 4x gold" config),
+                              # NOT independently fitted to copper's own volatility
+        "sl": 20.0,           # price units — same single-event basis as offset
+        "risk_pct": 3.2143,  # of the total budget — matched to FX-pair share,
+                              # conservative given single-event evidence only
+        "decimals": 2,        # confirmed live 2026-08-30: digits=2, contract_size=1.0,
+                              # tick_value=0.01, tick_size=0.01
+        "max_hold_seconds": 60.0,
+    },
     "EURUSDm": {
         "pip": 0.0001,
         "point_size": 0.00001,
@@ -293,7 +330,9 @@ RISK_PCT = 14.1  # fallback default only if a symbol's config is missing
 # risk_pct — every symbol in SYMBOL_CONFIG now sets its own (2026-08-12
 # allocation, scaled 2026-08-12 from an initial 14% total to 30%:
 # 8.57% XAU + 8.57% XAG + 3.21%×4 FX = 30% total, replacing the old
-# flat 14.1% applied independently to each symbol).
+# flat 14.1% applied independently to each symbol). 2026-08-30: +3.2143%
+# for XCUUSDm brings the total to 33.2143% — not rebalanced down, by
+# choice, pending Joseph's call on whether to trim elsewhere.
 MAGIC = 20260807  # unique to this strategy — must not collide with
 # straddle_strategy.py (20260716), news_confirm_strategy.py
 # (20260801), or news_reload_strategy.py (20260810)
@@ -793,7 +832,7 @@ class NewsSpikeStrategy:
     def __repr__(self) -> str:
         return (
             f"NewsSpikeStrategy(symbols={self.traded_symbols}, "
-            f"events=[NFP,CPI,FOMC], risk_pct=per-symbol (XAU/XAG 8.57% each, FX 3.21% each, 30% total), "
+            f"events=[NFP,CPI,FOMC], risk_pct=per-symbol (XAU/XAG 8.57% each, FX/copper 3.21% each, 33.2143% total), "
             f"max_hold=60s, filter=None, one_shot_per_event=True, stateless=True, "
             f"validated=['XAUUSDm'], unvalidated={[s for s in SYMBOL_CONFIG if s != 'XAUUSDm']})"
         )
@@ -814,5 +853,5 @@ if __name__ == "__main__":
         print(f"  Next: {min(future) if future else 'NONE — add dates'}")
     print()
     print("*** XAUUSDm backed by real, control-tested 1-min data ***")
-    print("*** All other 5 symbols: structural extension only, ZERO backtest ***")
+    print("*** All other symbols: structural extension only, minimal or zero backtest ***")
     print("*** Still DEMO ONLY — do not run any of this on real money ***")
