@@ -18,7 +18,8 @@ Edge   : Straddle-at-release entry (same OCO pattern as
          round-tripped almost all the way back to flat within 30 min).
          One shot per event, then done.
 
-Entry  : Buy-stop + sell-stop straddle at the release, offset from the
+Entry  : Buy-stop + sell-stop straddle, placed in a narrow PRE-RELEASE
+         window only (see "Entry window" below) — offset from the
          anchor price (per-symbol distance below). Whichever side fills
          is the trade. Covers NFP, CPI, and FOMC — each on its own
          schedule (NFP/CPI at 8:30 AM ET, FOMC at 2:00 PM ET).
@@ -34,6 +35,20 @@ Filter : NONE. See prior revision's docstring — the FOMC-proximity
          filter was tested and removed for THIS mechanic specifically
          (helped the reload chain, hurt the spike mechanic). Not
          re-litigated here.
+
+Entry window (CHANGED 2026-09-04) : Every date in the three schedule
+         constants below is stored 5 SECONDS EARLY relative to the real,
+         source-verified release time (e.g. real NFP release 12:30:00
+         UTC is stored as 12:29:55). This is deliberate, not a mistake —
+         see CHANGE LOG. The entry window itself is now ONLY the 5
+         seconds before the real release — `_next_event_trigger_window()`
+         opens at the stored (early) time and closes hard AT the real
+         release. If a straddle has not been placed by the real release
+         moment, that symbol sits out the event entirely — no retry
+         after price has already moved. The point of the spike edge is
+         catching the FIRST move; chasing it after release defeats the
+         purpose and re-exposes the entry to the same price/stops_level
+         rejection risk this change exists to avoid.
 
 *** VALIDATED EVIDENCE — XAUUSDm ONLY ***
 XAUUSDm is backed by real, minute-level, control-tested backtest data
@@ -80,6 +95,71 @@ treated before its own backtest existed.
 
 *** STILL DEMO ONLY (all symbols) ***
 
+CHANGE LOG (2026-09-04, risk_pct redistribution):
+  - risk_pct redistributed across just XAUUSDm/XAGUSDm/XCUUSDm, preserving
+    the original 33.2143% total budget (previously spread across 7
+    symbols) rather than leaving it reduced to 20.2857%. Same relative
+    weighting kept: XAUUSDm=XAGUSDm=14.04% each, XCUUSDm=5.26% (XCU's
+    share stayed proportionally smaller than XAU/XAG's, same ratio as
+    when it matched the FX-pair share — not equalized up just because
+    the FX pairs are gone).
+
+CHANGE LOG (2026-09-04, gold/silver/copper only):
+  - FINAL DECISION — the four FX pairs (EURUSDm, GBPUSDm, USDJPYm,
+    USDCADm) are REMOVED from SYMBOL_CONFIG entirely. This strategy now
+    trades ONLY XAUUSDm, XAGUSDm, XCUUSDm. Total budget across the
+    remaining 3 symbols was initially left at 8.5714% + 8.5714% + 3.2143%
+    = 20.2857% (down from 33.2143% across 7 symbols) — SUPERSEDED the
+    same day: risk_pct was then redistributed so the original 33.2143%
+    total is preserved, concentrated on just these 3 symbols instead of
+    being left smaller (see risk_pct redistribution entry below).
+  - The FX pairs' offset/SL tuning history (12p/20p initial -> 14p/24p
+    widened -> 5p/8p narrowed, all same day) is now moot for live
+    trading but left in this changelog for the record, since it's real
+    evidence about how sensitive this mechanic is to offset/SL choice
+    on FX symbols, in case they're ever re-added.
+
+CHANGE LOG (2026-09-04, entry-window/polling changes):
+  - All three schedule constants (NFP/CPI/FOMC_SCHEDULE_UTC) shifted 5
+    seconds EARLY relative to the real, source-verified release times.
+    Root cause this fixes: live rejections at exact release time
+    (XAUUSDm SELL retcode=10015 "Invalid price", XAGUSDm SELL
+    retcode=10006) traced to two compounding release-moment effects —
+    (1) the anchor price used to compute offset/SL is fetched a beat
+    before order_send() reaches the broker, and during the NFP spike
+    price can move enough in that gap that the calculated stop is no
+    longer where it was meant to be relative to current price, and (2)
+    brokers (Exness included) widen trade_stops_level dynamically the
+    instant high-impact volatility hits, shrinking the minimum-distance
+    room a stop order needs. Both effects are real only AT/AFTER the
+    real release moment, not before it — placing the pending straddle
+    as a RESTING order 5s before release sidesteps both, since stops-
+    level and price validation happen at placement time, not
+    continuously against a resting order.
+  - `_next_event_trigger_window()` narrowed to a HARD pre-release-only
+    window: opens at the stored (5s-early) release_time, closes AT the
+    real release moment (release_time + 5s). Previously stayed open for
+    a full 5 minutes after release to allow retries; that retry window
+    is deliberately removed. Rationale: the spike edge is about catching
+    the FIRST move — once real release has passed and price has already
+    moved, there's no move left to catch, and retrying would just
+    resubmit into the exact volatile conditions this change exists to
+    avoid. If a symbol's early placement attempt fails, that symbol sits
+    out the event; no second chance within the same release.
+  - `_next_flatten_window()` default `lead_minutes` changed 5.0 -> 10.0
+    — longer pre-event runway to guarantee nothing from either this
+    strategy or straddle_strategy.py is still open going into an event.
+    Window is computed off the stored (5s-early) release_time, so in
+    real-world terms flatten now runs from 10:00 before the real release
+    down to 5s before it, handing off directly to the entry window with
+    no gap.
+  - Requires ~1s main-loop polling to be reliable — a 5-second-wide
+    entry window with slower polling (e.g. the old 30s cadence) risks
+    a poll cycle stepping over the entire window without ever checking
+    inside it, silently reverting to no entry for that event. Not
+    enforced in this file (that's main_news_spike.py's job) — noted
+    here since it's a real dependency of this change actually working.
+
 CHANGE LOG (2026-08-30):
   - Added XCUUSDm (copper), risk_pct=3.2143% (same share as each FX
     pair). Offset=12.0 / SL=20.0 (price units, digits=2) — carried over
@@ -93,7 +173,7 @@ CHANGE LOG (2026-08-12):
     order placement in check_and_place() — this had been dropped during
     a revert and is the actual fix for the EURUSDm-not-closing-before-
     NFP bug reported live. The window-based flatten (_next_flatten_window,
-    5 min before release) depends on the main loop calling
+    lead_minutes before release) depends on the main loop calling
     check_and_place() every cycle in that window; if the main loop's
     per-symbol routing sends a symbol to manage_open_trade() instead
     (observed live 2026-08-12 on EURUSDm, one minute before release, no
@@ -105,13 +185,14 @@ CHANGE LOG (2026-08-12):
     independent layer that doesn't depend on the window timing lining up
     with when the main loop happens to call this method — it runs
     unconditionally every time check_and_place() reaches that point,
-    which happens across many cycles inside the whole 5-min trigger
-    window, not just the exact cycle the window check catches.
+    which happens across many cycles inside the whole trigger window,
+    not just the exact cycle the window check catches.
   - Trimmed to 6 symbols (XAUUSDm, XAGUSDm, EURUSDm, GBPUSDm, USDJPYm,
     USDCADm) per Joseph's request — USDCHFm/AUDUSDm/NZDUSDm removed.
   - FX offset/SL settled at 12/20 pips (reverted from an intermediate
     8/15p tighten that was catching fakeouts on slower releases).
-  - Flatten lead time set to 5 minutes (down from an initial 10).
+  - Flatten lead time set to 5 minutes (down from an initial 10) — since
+    revised again to 10 minutes, see 2026-09-04 entry above.
   - Added _next_flatten_window()/_flatten_symbol(): closes ANY position
     and cancels ANY pending order on a symbol, regardless of magic
     number, in the lead-up to a scheduled event — deliberate, simpler
@@ -159,42 +240,55 @@ import MetaTrader5 as mt5
 # event type, each source-verified (BLS for NFP/CPI, Federal Reserve for
 # FOMC) — do not assume a fixed-rule pattern for any of them; the 2025
 # government shutdown proved that assumption can silently break.
+#
+# *** All timestamps below are stored 5 SECONDS EARLY relative to the real
+# release time (e.g. real NFP release 12:30:00 UTC -> stored as 12:29:55).
+# This is deliberate — see module docstring CHANGE LOG (2026-09-04). The
+# real release moment for any entry here is `release_time + 5 seconds`. ***
 # ---------------------------------------------------------------------------
 
 NFP_SCHEDULE_UTC: List[datetime.datetime] = [
-    datetime.datetime(2026, 8, 7, 12, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 9, 4, 12, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 10, 2, 12, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 11, 6, 13, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 12, 4, 13, 30, tzinfo=datetime.timezone.utc),
-    # Add next month's date here. DST-adjust by hand: 8:30 AM ET = 12:30 UTC
-    # during DST (roughly Mar-Nov), 13:30 UTC otherwise.
+    datetime.datetime(2026, 8, 7, 12, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 9, 4, 12, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 2, 12, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 11, 6, 13, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 4, 13, 29, 55, tzinfo=datetime.timezone.utc),
+    # Add next month's date here, 5s EARLY. DST-adjust by hand: 8:30 AM ET
+    # = 12:30:00 UTC during DST (roughly Mar-Nov), 13:30:00 UTC otherwise
+    # -> store as 12:29:55 / 13:29:55 respectively.
 ]
 
 CPI_SCHEDULE_UTC: List[datetime.datetime] = [
-    datetime.datetime(2026, 8, 12, 12, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 9, 11, 12, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 10, 14, 12, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 11, 10, 13, 30, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 12, 10, 13, 30, tzinfo=datetime.timezone.utc),
-    # Same 8:30 AM ET / DST rule as NFP. Check bls.gov/schedule/news_release/cpi.htm
+    datetime.datetime(2026, 8, 12, 12, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 9, 11, 12, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 14, 12, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 11, 10, 13, 29, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 10, 13, 29, 55, tzinfo=datetime.timezone.utc),
+    # Same 8:30 AM ET / DST rule as NFP, stored 5s EARLY. Check
+    # bls.gov/schedule/news_release/cpi.htm
 ]
 
 FOMC_SCHEDULE_UTC: List[datetime.datetime] = [
-    datetime.datetime(2026, 9, 16, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 10, 28, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 12, 9, 19, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 1, 27, 19, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 3, 17, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 4, 28, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 6, 9, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 7, 28, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 9, 15, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 10, 27, 18, 0, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 12, 8, 19, 0, tzinfo=datetime.timezone.utc),
-    # Decision time is 2:00 PM ET = 18:00 UTC during DST, 19:00 UTC otherwise.
+    datetime.datetime(2026, 9, 16, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 28, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 9, 18, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 1, 27, 18, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 3, 17, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 4, 28, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 6, 9, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 7, 28, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 9, 15, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 10, 27, 17, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 12, 8, 18, 59, 55, tzinfo=datetime.timezone.utc),
+    # Decision time is 2:00 PM ET = 18:00:00 UTC during DST, 19:00:00 UTC
+    # otherwise -> stored 5s EARLY as 17:59:55 / 18:59:55 respectively.
     # Add each new year's dates in one go once the Fed publishes them.
 ]
+
+# Real release time = stored schedule time + this. Kept as a named constant
+# so every place in the file that needs to reason about the REAL moment
+# (vs. the deliberately-early stored one) references the same value.
+EARLY_ENTRY_SECONDS = 5.0
 
 
 def _validate_calendar_freshness() -> None:
@@ -226,8 +320,9 @@ def _validate_hedging_mode() -> None:
     as a diagnostic since it's cheap and still useful context."""
     acc = mt5.account_info()
     if acc is None:
-        print("  WARNING: mt5.account_info() unavailable — cannot verify "
-              "hedging mode.")
+        print(
+            "  WARNING: mt5.account_info() unavailable — cannot verify " "hedging mode."
+        )
         return
     margin_mode = getattr(acc, "margin_mode", None)
     HEDGING = getattr(mt5, "ACCOUNT_MARGIN_MODE_RETAIL_HEDGING", 2)
@@ -260,79 +355,53 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
     "XAUUSDm": {
         "pip": 1.0,
         "point_size": 0.001,
-        "offset": 3.0,       # $
-        "sl": 5.0,           # $
-        "risk_pct": 8.5714,  # of the 30% total budget — highest single share, only validated symbol
+        "offset": 4.0,  # $ — widened again from 3.5 (2026-09-04, ~14%, focused down to gold/silver/copper only)
+        "sl": 7.0,  # $ — widened again from 6.0 (2026-09-04, ~17%)
+        "risk_pct": 14.04,  # of ~33.3% total budget — redistributed 2026-09-04: the original
+        # 33.2143% total (previously split across all 7 symbols) is now
+        # concentrated on just XAU/XAG/XCU, same relative weighting as before
+        # (XAU=XAG, both roughly 2.67x XCU's share) — highest single share,
+        # only validated symbol
         "decimals": 2,
         "max_hold_seconds": 60.0,
     },
     "XAGUSDm": {
         "pip": 0.01,
         "point_size": 0.001,
-        "offset": 0.04,      # $ — UNCALIBRATED
-        "sl": 0.06,          # $ — UNCALIBRATED
-        "risk_pct": 8.5714,  # of the 30% total budget — matches gold, despite zero evidence behind this symbol
+        "offset": 0.06,  # $ — widened again from 0.05 (2026-09-04, 20%) — UNCALIBRATED
+        "sl": 0.09,  # $ — widened again from 0.07 (2026-09-04, ~29%) — UNCALIBRATED
+        "risk_pct": 14.04,  # of ~33.3% total budget — redistributed 2026-09-04, same as XAUUSDm
+        # (see that entry's comment for the full rationale) — matches gold,
+        # despite zero evidence behind this symbol
         "decimals": 3,
         "max_hold_seconds": 60.0,
     },
     "XCUUSDm": {
         "pip": 0.01,
         "point_size": 0.01,
-        "offset": 12.0,      # price units — carried over from the single NFP
-                              # 2026-08-07 backtest ("scaled 4x gold" config),
-                              # NOT independently fitted to copper's own volatility
-        "sl": 20.0,           # price units — same single-event basis as offset
-        "risk_pct": 3.2143,  # of the total budget — matched to FX-pair share,
-                              # conservative given single-event evidence only
-        "decimals": 2,        # confirmed live 2026-08-30: digits=2, contract_size=1.0,
-                              # tick_value=0.01, tick_size=0.01
-        "max_hold_seconds": 60.0,
-    },
-    "EURUSDm": {
-        "pip": 0.0001,
-        "point_size": 0.00001,
-        "offset": 0.0012,    # 12 pips
-        "sl": 0.0020,        # 20 pips
-        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
-        "decimals": 5,
-        "max_hold_seconds": 60.0,
-    },
-    "GBPUSDm": {
-        "pip": 0.0001,
-        "point_size": 0.00001,
-        "offset": 0.0012,    # 12 pips
-        "sl": 0.0020,        # 20 pips
-        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
-        "decimals": 5,
-        "max_hold_seconds": 60.0,
-    },
-    "USDJPYm": {
-        "pip": 0.01,
-        "point_size": 0.001,
-        "offset": 0.12,      # 12 pips
-        "sl": 0.20,          # 20 pips
-        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
-        "decimals": 3,
-        "max_hold_seconds": 60.0,
-    },
-    "USDCADm": {
-        "pip": 0.0001,
-        "point_size": 0.00001,
-        "offset": 0.0012,    # 12 pips
-        "sl": 0.0020,        # 20 pips
-        "risk_pct": 3.2143,  # of the 30% total budget — 12.86% split evenly across 4 FX pairs
-        "decimals": 5,
+        "offset": 16.0,  # price units — widened again from 14.0 (2026-09-04, ~14%) — carried over
+        # from the single NFP 2026-08-07 backtest ("scaled 4x gold" config), NOT
+        # independently fitted to copper's own volatility
+        "sl": 28.0,  # price units — widened again from 24.0 (2026-09-04, ~17%) — same
+        # single-event basis as offset
+        "risk_pct": 5.26,  # of ~33.3% total budget — redistributed 2026-09-04: kept its original
+        # smaller relative share (roughly 0.375x XAU/XAG's share, same ratio as
+        # before) rather than being equalized up to match them, conservative
+        # given single-event evidence only
+        "decimals": 2,  # confirmed live 2026-08-30: digits=2, contract_size=1.0,
+        # tick_value=0.01, tick_size=0.01
         "max_hold_seconds": 60.0,
     },
 }
 
 RISK_PCT = 14.1  # fallback default only if a symbol's config is missing
-# risk_pct — every symbol in SYMBOL_CONFIG now sets its own (2026-08-12
-# allocation, scaled 2026-08-12 from an initial 14% total to 30%:
-# 8.57% XAU + 8.57% XAG + 3.21%×4 FX = 30% total, replacing the old
-# flat 14.1% applied independently to each symbol). 2026-08-30: +3.2143%
-# for XCUUSDm brings the total to 33.2143% — not rebalanced down, by
-# choice, pending Joseph's call on whether to trim elsewhere.
+# risk_pct — every symbol in SYMBOL_CONFIG now sets its own. History:
+# 2026-08-12 allocation scaled from an initial 14% total to 30% (8.57%
+# XAU + 8.57% XAG + 3.21%×4 FX). 2026-08-30: +3.2143% for XCUUSDm ->
+# 33.2143% total across 7 symbols. 2026-09-04: FX pairs removed (gold/
+# silver/copper only, see CHANGE LOG), risk_pct then redistributed to
+# preserve the same 33.2143% total across just XAU/XAG/XCU (14.04% +
+# 14.04% + 5.26%) rather than leaving it reduced.
 MAGIC = 20260807  # unique to this strategy — must not collide with
 # straddle_strategy.py (20260716), news_confirm_strategy.py
 # (20260801), or news_reload_strategy.py (20260810)
@@ -367,12 +436,7 @@ class NewsSpikeStrategy:
         / trade_tick_size gives $-per-1.0-price-unit-move per lot, already
         converted to account currency by MT5. Clamps to the symbol's real
         volume_min/volume_max/volume_step. Uses each symbol's own risk_pct
-        (see SYMBOL_CONFIG) rather than a flat global RISK_PCT — split
-        2026-08-12 per Joseph's allocation: 4% XAU, 4% XAG, 1.5% each for
-        the 4 FX pairs, scaled 2026-08-12 to a 30% total budget (up from an
-        initial 14%) instead of each symbol independently risking the
-        full 14.1% — well above this project's own quarter-Kelly ceiling,
-        Joseph's explicit choice."""
+        (see SYMBOL_CONFIG) rather than a flat global RISK_PCT."""
         cfg = SYMBOL_CONFIG[symbol]
         info = mt5.symbol_info(symbol)
         if info is None or not info.trade_tick_size:
@@ -479,16 +543,24 @@ class NewsSpikeStrategy:
     def _next_event_trigger_window(
         self, now: datetime.datetime
     ) -> Optional[Tuple[datetime.datetime, str]]:
-        """Checks all three schedules (NFP, CPI, FOMC) and returns
-        (release_time, event_type) if `now` falls inside any of their
-        5-min placement windows — or None."""
+        """HARD pre-release-only entry window (CHANGED 2026-09-04).
+        `release_time` values in the schedule constants are stored
+        EARLY_ENTRY_SECONDS (5s) before the real release. This window
+        opens at that stored time and closes AT the real release moment
+        (`release_time + EARLY_ENTRY_SECONDS`) — NOT 5 minutes after, as
+        in prior revisions. Once the real release has passed, price has
+        already moved and there is no retry: that symbol sits out this
+        event. See module docstring CHANGE LOG for the full rationale."""
         for event_type, schedule in (
             ("NFP", NFP_SCHEDULE_UTC),
             ("CPI", CPI_SCHEDULE_UTC),
             ("FOMC", FOMC_SCHEDULE_UTC),
         ):
             for release_time in schedule:
-                if release_time <= now < release_time + datetime.timedelta(minutes=5):
+                real_release = release_time + datetime.timedelta(
+                    seconds=EARLY_ENTRY_SECONDS
+                )
+                if release_time <= now < real_release:
                     return release_time, event_type
         return None
 
@@ -511,11 +583,14 @@ class NewsSpikeStrategy:
         return len(own_closes) > 0
 
     def _next_flatten_window(
-        self, now: datetime.datetime, lead_minutes: float = 5.0
+        self, now: datetime.datetime, lead_minutes: float = 10.0
     ) -> Optional[Tuple[datetime.datetime, str]]:
         """Returns (release_time, event_type) if `now` is inside the
-        pre-event flatten window — lead_minutes before release, up to
-        release itself."""
+        pre-event flatten window — lead_minutes before the stored
+        (5s-early) release_time, up to release_time itself. In real-world
+        terms this runs from lead_minutes-before-the-real-release down to
+        EARLY_ENTRY_SECONDS-before-the-real-release, handing off directly
+        to the entry window with no gap."""
         for event_type, schedule in (
             ("NFP", NFP_SCHEDULE_UTC),
             ("CPI", CPI_SCHEDULE_UTC),
@@ -534,9 +609,9 @@ class NewsSpikeStrategy:
         places in check_and_place() — the window-based check AND an
         unconditional final check right before order placement — because
         the window-based one alone depends on the main loop calling
-        check_and_place() for this symbol during that specific 5-min
-        stretch, which isn't guaranteed by this file's own logic (that's
-        the main loop's job, outside this file)."""
+        check_and_place() for this symbol during that specific stretch,
+        which isn't guaranteed by this file's own logic (that's the main
+        loop's job, outside this file)."""
         actions: List[str] = []
 
         for pos in mt5.positions_get(symbol=symbol) or ():
@@ -567,22 +642,47 @@ class NewsSpikeStrategy:
                 {"action": mt5.TRADE_ACTION_REMOVE, "order": order.ticket}
             )
             if result is not None and result.retcode == mt5.TRADE_RETCODE_DONE:
-                actions.append(f"cancelled pending magic={order.magic} ticket={order.ticket}")
+                actions.append(
+                    f"cancelled pending magic={order.magic} ticket={order.ticket}"
+                )
 
         return "; ".join(actions) if actions else None
 
     # ---------------------------------------------------------------- entry
 
-    def check_and_place(self, symbol: str) -> Dict[str, Any]:
-        """Call on every poll (1-min cadence recommended — see
-        main_news_spike.py). Places the straddle AT the release moment
-        for whichever event type (NFP/CPI/FOMC) is currently inside its
-        trigger window. manage_open_trade() then handles the hard
-        1-minute force-close — there is no TP, no reload here."""
+    def check_and_place(
+        self, symbol: str, now: Optional[datetime.datetime] = None
+    ) -> Dict[str, Any]:
+        """Call on every poll (~1s cadence required near a scheduled event
+        — see module docstring CHANGE LOG 2026-09-04/2026-09-04-b; a
+        5-second-wide entry window with slower polling risks stepping over
+        it entirely). Places the straddle in the narrow pre-release gap
+        for whichever event type (NFP/CPI/FOMC) currently has it open.
+        manage_open_trade() then handles the hard 1-minute force-close —
+        there is no TP, no reload, and no retry past the real release
+        moment.
+
+        `now` should be a SINGLE timestamp captured ONCE per poll cycle by
+        the caller (the main loop) and passed to every symbol's call that
+        cycle — not fetched fresh inside this method. Real bug this fixes
+        (found live, CPI event): with each call fetching its own
+        datetime.now() internally, a slow symbol earlier in the loop (real
+        order_send() round-trips, slower during a volatile print) could
+        push the clock far enough that a LATER symbol in the same cycle —
+        same scheduled event, same intended entry — saw `now` already past
+        `real_release` and got "Not inside any event trigger window" even
+        though it should have been eligible. Passing one shared `now` in
+        means every symbol checked in the same cycle is judged against the
+        exact same instant, regardless of loop position or how long
+        earlier symbols took. If `now` is omitted (e.g. calling this
+        directly/interactively), falls back to fetching it internally —
+        but the main loop should always pass it explicitly."""
         if symbol not in self.traded_symbols:
             return self._no(f"{symbol} not enabled")
 
-        now = datetime.datetime.now(datetime.timezone.utc)
+        if now is None:
+            now = datetime.datetime.now(datetime.timezone.utc)
+
         flatten_window = self._next_flatten_window(now)
         if flatten_window is not None:
             flatten_release, flatten_event = flatten_window
@@ -614,13 +714,6 @@ class NewsSpikeStrategy:
         # Unconditional final safety net — runs every single time
         # check_and_place() reaches this point, regardless of whether the
         # window-based flatten above fired earlier in a different cycle.
-        # This is the actual fix for the EURUSDm-not-closing-before-NFP
-        # bug: the window check only helps on cycles where the main loop
-        # happens to route this symbol through check_and_place() during
-        # the 5-min flatten window specifically. This check has no such
-        # dependency — it runs on every cycle that gets this far, across
-        # the whole 5-min trigger window, so a missed window-cycle for
-        # one symbol doesn't leave it permanently unguarded.
         flatten_result = self._flatten_symbol(symbol)
         if flatten_result:
             return self._no(f"Flattened at entry-time (final check): {flatten_result}")
@@ -646,7 +739,16 @@ class NewsSpikeStrategy:
         sell_sl = _round_price(sell_stop + sl, symbol)
 
         lots = self._base_lot(symbol)
-        expiration = int((release_time + datetime.timedelta(minutes=5)).timestamp())
+        # Expiration anchored to the REAL release time (release_time +
+        # EARLY_ENTRY_SECONDS), not the stored early one, so pending
+        # orders that somehow survive past intended cleanup still expire
+        # at a sensible real-world moment rather than 5s too early.
+        real_release_time = release_time + datetime.timedelta(
+            seconds=EARLY_ENTRY_SECONDS
+        )
+        expiration = int(
+            (real_release_time + datetime.timedelta(minutes=5)).timestamp()
+        )
         filling_mode = self._filling_mode(symbol)
 
         tickets: Dict[str, Optional[int]] = {"buy": None, "sell": None}
@@ -816,7 +918,10 @@ class NewsSpikeStrategy:
     def get_performance_by_symbol(self, lookback_days: int = 120) -> Dict[str, Any]:
         """Per-symbol breakdown — worth checking regularly since 5 of 6
         symbols are unvalidated."""
-        return {sym: self.get_performance_summary(sym, lookback_days) for sym in self.traded_symbols}
+        return {
+            sym: self.get_performance_summary(sym, lookback_days)
+            for sym in self.traded_symbols
+        }
 
     # ---------------------------------------------------------------- util
 
@@ -832,8 +937,10 @@ class NewsSpikeStrategy:
     def __repr__(self) -> str:
         return (
             f"NewsSpikeStrategy(symbols={self.traded_symbols}, "
-            f"events=[NFP,CPI,FOMC], risk_pct=per-symbol (XAU/XAG 8.57% each, FX/copper 3.21% each, 33.2143% total), "
-            f"max_hold=60s, filter=None, one_shot_per_event=True, stateless=True, "
+            f"events=[NFP,CPI,FOMC], risk_pct=per-symbol (XAU/XAG 14.04% each, XCU 5.26%, ~33.3% total), "
+            f"max_hold=60s, filter=None, one_shot_per_event=True, "
+            f"entry_window='pre-release only, {EARLY_ENTRY_SECONDS:.0f}s before real release, no post-release retry', "
+            f"stateless=True, "
             f"validated=['XAUUSDm'], unvalidated={[s for s in SYMBOL_CONFIG if s != 'XAUUSDm']})"
         )
 
@@ -850,8 +957,15 @@ if __name__ == "__main__":
     ):
         future = [d for d in schedule if d >= now]
         print(f"{name} events scheduled: {len(schedule)} total, {len(future)} upcoming")
-        print(f"  Next: {min(future) if future else 'NONE — add dates'}")
+        print(
+            f"  Next (stored, 5s early): {min(future) if future else 'NONE — add dates'}"
+        )
     print()
     print("*** XAUUSDm backed by real, control-tested 1-min data ***")
-    print("*** All other symbols: structural extension only, minimal or zero backtest ***")
+    print(
+        "*** All other symbols: structural extension only, minimal or zero backtest ***"
+    )
+    print(
+        f"*** Entry window: pre-release only ({EARLY_ENTRY_SECONDS:.0f}s early -> real release), no retry after ***"
+    )
     print("*** Still DEMO ONLY — do not run any of this on real money ***")

@@ -1,8 +1,14 @@
 import time
 from decouple import config, AutoConfig
 from mt5.meter_trader_config import MetaTraderConfig
-from strategies.news_confirm_strategy import NewsSpikeStrategy
-from datetime import datetime, timezone
+from strategies.news_confirm_strategy import (
+    NewsSpikeStrategy,
+    NFP_SCHEDULE_UTC,
+    CPI_SCHEDULE_UTC,
+    FOMC_SCHEDULE_UTC,
+    EARLY_ENTRY_SECONDS,
+)
+from datetime import datetime, timezone, timedelta
 import os
 
 
@@ -21,27 +27,76 @@ def reload_decouple():
     AutoConfig._instances = {}
 
 
-def sleep_until_next_30sec():
-    """30-second polling — tighter than the earlier 1-minute cadence.
-    With a hard 60-second force-close, 1-min polling meant the actual
-    close could land anywhere from 60 to 119 seconds after entry
-    (whatever the next poll happened to catch). 30-sec polling narrows
-    that to 60-89 seconds — closer to the real intent, and catches the
-    trigger window and same-minute SL risk with finer resolution too.
-    Aligned to :00/:30 second marks, not just 'every 30s from whenever
-    the loop started'."""
-    now = datetime.now(timezone.utc)
-    seconds_to_wait = 30 - (now.second % 30)
+# ---------------------------------------------------------------------------
+# Dynamic polling (added 2026-09-04)
+# ---------------------------------------------------------------------------
+# news_spike_strategy.py's entry window is only EARLY_ENTRY_SECONDS (5s)
+# wide — see that file's own module docstring CHANGE LOG. At the old flat
+# 30s cadence, a poll cycle can step clean over that 5-second window
+# without ever checking inside it, silently losing the event (this is what
+# happened live on CPI: gold traded, silver's check landed just late
+# enough to miss the window entirely).
+#
+# Fix: poll every 1 second whenever a scheduled event is within
+# TIGHT_BAND_MINUTES, poll every 30 seconds (as before) the rest of the
+# time. This gets reliable window coverage exactly when it matters without
+# hammering MT5 with 1s IPC calls 24/7 for windows that only exist a few
+# minutes a month.
+TIGHT_POLL_SECONDS = 1
+NORMAL_POLL_SECONDS = 30
+TIGHT_BAND_MINUTES = 2  # safely brackets both the entry window and the
+                         # tail end of the flatten window on either side
+
+
+def _seconds_to_next_event(now: datetime) -> float:
+    """Seconds until the NEXT UPCOMING scheduled release across all three
+    calendars — forward-looking only, and corrected to the REAL release
+    time (schedule constants are stored EARLY_ENTRY_SECONDS/5s early, per
+    news_spike_strategy.py — same constant imported above so both files
+    always agree on what "real release time" means, no duplicated/
+    guessed offset here). Once `now` passes a release time, that event
+    stops counting entirely (tight polling reverts to NORMAL_POLL_SECONDS
+    immediately at the real release moment, not TIGHT_BAND_MINUTES after
+    it). Used ONLY to choose polling cadence — no trading/entry logic
+    depends on this function; that logic lives entirely in
+    news_spike_strategy.py itself.
+
+    NOTE: because this stops being "tight" right at real release, the 60s
+    force-close (manage_open_trade()) is only checked on the NORMAL
+    30s cadence from that point on, not 1s. In practice this means the
+    force-close can fire anywhere from 60 to ~89 seconds after fill,
+    same margin as the plain 30s-polling straddle bot, rather than the
+    tight ~60-61s this tight-polling band would otherwise give it."""
+    real_events = [
+        e + timedelta(seconds=EARLY_ENTRY_SECONDS)
+        for e in (NFP_SCHEDULE_UTC + CPI_SCHEDULE_UTC + FOMC_SCHEDULE_UTC)
+    ]
+    future = [e for e in real_events if e > now]
+    if not future:
+        return float("inf")
+    return (min(future) - now).total_seconds()
+
+
+def sleep_until_next_tick(now: datetime, interval: int):
+    """Sleeps until the next interval-aligned second mark (:00/:01/:02...
+    for interval=1, :00/:30 for interval=30), not just 'interval seconds
+    from whenever this was called' — keeps cycles clock-aligned rather
+    than drifting."""
+    seconds_to_wait = interval - (now.second % interval)
+    if seconds_to_wait <= 0:
+        seconds_to_wait = interval
     time.sleep(seconds_to_wait)
 
 
 reload_decouple()
 
-LIVE = False  # NOT backtested at all — see news_spike_strategy.py's
-# module docstring "DATA LIMITATION" section. Demo only.
+LIVE = False  # NOT backtested at all for most symbols — see
+# news_spike_strategy.py's module docstring "VALIDATED EVIDENCE" section.
+# Demo only.
 
 # Fourth standalone process, own magic number, no shared loop with
-# straddle_strategy.py, news_confirm_strategy.py, or news_reload_strategy.py.
+# straddle_strategy.py, news_confirm_strategy.py's own confirm mechanic,
+# or news_reload_strategy.py.
 
 
 def main():
@@ -68,6 +123,16 @@ def main():
 
     # ── Main loop ─────────────────────────────────────────────────────────
     while True:
+        # ONE timestamp per cycle, passed into every symbol's check this
+        # cycle. Fixes the gold-traded/silver-didn't gap: previously each
+        # check_and_place(symbol) call fetched its own fresh `now`
+        # internally, so a slower symbol earlier in the loop (real
+        # order_send() round-trips, slower during a volatile print) could
+        # push the clock far enough that a later symbol in the SAME cycle,
+        # for the SAME event, saw its 5s window already closed. All
+        # symbols checked this cycle are now judged against the exact same
+        # instant, regardless of loop position or how long earlier symbols
+        # took.
         now = datetime.now(timezone.utc)
 
         print("=" * 55)
@@ -81,17 +146,10 @@ def main():
             if pending_status not in ("No pending straddle", "Pending"):
                 print(f"   {pending_status}")
 
-            # FIXED 2026-08-12: was mt5_config.get_open_trades_count(symbol=symbol),
-            # which counts ANY open position on this symbol regardless of magic
-            # number — including straddle_strategy.py's (MAGIC=20260716) overnight
-            # positions on the 4 shared symbols (EURUSDm, GBPUSDm, USDJPYm,
-            # XAUUSDm). That meant this loop routed those symbols to
-            # manage_open_trade() on every cycle whenever the daily bot had a
-            # position open — which correctly reported "not mine" every time —
-            # and check_and_place() (where the flatten-before-entry logic lives)
-            # never ran for them at all. has_own_open_trade() filters by this
-            # strategy's own MAGIC before answering, same as every other read
-            # inside news_spike_strategy.py.
+            # has_own_open_trade() filters by this strategy's own MAGIC
+            # before answering — see news_spike_strategy.py docstring for
+            # the bug this fixes on shared symbols (EURUSDm/GBPUSDm/
+            # USDJPYm/XAUUSDm, also traded by straddle_strategy.py).
             if strategy.has_own_open_trade(symbol):
                 status = strategy.manage_open_trade(symbol)
                 print(f"   {status}")
@@ -101,11 +159,18 @@ def main():
                 print(f"   {pending_status}")
                 continue
 
-            signal = strategy.check_and_place(symbol)
+            signal = strategy.check_and_place(symbol, now)
             print(f"   {signal['reason']}")
 
         print("\nCycle done")
-        sleep_until_next_30sec()
+
+        gap_seconds = _seconds_to_next_event(now)
+        interval = (
+            TIGHT_POLL_SECONDS
+            if gap_seconds <= TIGHT_BAND_MINUTES * 60
+            else NORMAL_POLL_SECONDS
+        )
+        sleep_until_next_tick(datetime.now(timezone.utc), interval)
 
 
 if __name__ == "__main__":
