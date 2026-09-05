@@ -1,301 +1,111 @@
-# Monthly Trend Strategy
+# MT5 Straddle Strategies — README
 
-A position trading strategy that uses the **monthly timeframe for directional bias**
-and **M15 bars for entry timing**.
-
-Derived from 25 months of backtested M15 data (Jun 2024 – Jun 2026) across EURUSDm
-and USDJPYm on Exness. Designed to run fully automated in **live MT5** with no manual
-intervention.
-
----
-
-## ⚠️ Concurrent Operation — Read Before Running
-
-This strategy does **not** run alone on the account. As of 2026-08-07, four other
-strategies are live or in active demo testing, each as its own standalone process:
-
-| Strategy | File | MAGIC | Symbols |
-|----------|------|-------|---------|
-| Straddle (daily) | `straddle_strategy.py` | `20260716` | EURUSDm, USDJPYm, GBPUSDm, XAUUSDm, BTCUSDm |
-| News Confirm | `news_confirm_strategy.py` | `20260801` | XAUUSDm |
-| News Reload | `news_reload_strategy.py` | `20260810` | XAUUSDm |
-| News Spike | `news_spike_strategy.py` | `20260807` | XAUUSDm (NFP/CPI/FOMC) |
-| **Monthly Trend** | *(this strategy)* | **`??? — not yet documented, see below`** | EURUSDm, USDJPYm |
-
-### 🔴 Direct symbol overlap with the straddle bot — the one that actually matters
-
-The three news strategies only ever touch XAUUSDm, so they have zero overlap with
-this strategy. **`straddle_strategy.py` is different — it trades EURUSDm and
-USDJPYm too, the exact same two pairs this strategy trades.** That means on any
-given day, it's entirely possible for the straddle bot and this strategy to both
-have an open position on EURUSDm (or USDJPYm) **at the same time**, from two
-completely independent decision processes.
-
-This needs three things to be true before it's safe to run both together:
-
-**1. This strategy MUST have its own unique MAGIC number**, different from
-`20260716`, `20260801`, `20260807`, and `20260810`. The current version of this
-README doesn't state one — if the actual code doesn't set a unique `MAGIC` and
-filter every position/order read by it (the same pattern every other strategy in
-this project uses — see `straddle_strategy.py`'s `_get_position()` for the
-reference implementation), fix that in code before running this alongside the
-straddle bot, not just in this document.
-
-**2. The MT5 account MUST be in hedging mode, not netting mode.** In netting mode,
-MT5 allows only ONE position per symbol per account, full stop — regardless of
-magic number. If both this strategy and the straddle bot tried to hold independent
-positions on EURUSDm at the same time under netting, MT5 would merge them into a
-single net position, and BOTH strategies' own SL/trail/sizing logic would silently
-operate on the wrong thing. This is not a reporting quirk — it would actively
-corrupt both strategies' actual risk management. Confirm the account mode before
-enabling this strategy live or on demo alongside the straddle bot.
-
-**3. Combined risk exposure is not automatically managed.** Each strategy sizes
-its own positions independently off the current account balance — this strategy
-targets 1% risk per trade (see Position Sizing below), and the straddle bot
-targets its own 1% risk per trade on the same pairs. Neither strategy is aware of
-the other's open risk. In the worst case (both fire on the same pair on the same
-day), realized risk on that one pair could be closer to ~2% of the account, not
-the 1% either strategy's own math assumes in isolation. Worth being deliberate
-about this rather than assuming it's handled — it isn't, by either strategy.
-
-### What's genuinely fine, no action needed
-- No overlap at all with the three news strategies (XAUUSDm only) — this
-  strategy never touches gold.
-- Each strategy is fully stateless and reads MT5 directly (positions, orders,
-  deal history) — none of them share any in-memory state, so a crash or restart
-  in one doesn't corrupt another, regardless of the symbol-overlap question above.
+Two standalone, **stateless** trading strategies. Neither keeps trade/order/result
+state in memory — every method re-derives what it needs from MT5 directly
+(`positions_get()`, `orders_get()`, `history_deals_get()`). A bot restart loses
+nothing, and neither an in-memory circuit breaker nor an in-memory streak
+counter can get permanently stuck.
 
 ---
 
-## 📌 Strategy Overview
+## 1. `straddle_strategy.py` — Session-Open Straddle
 
-- Prior month candle direction sets the trade bias for the entire month
-- Entry only in Week 1–2 of the month — weeks 3 and 4 trend exhausts
-- No M15 candle filters — monthly bias alone drives direction
-- Structural stop loss based on prior day high/low (min 35 pips)
-- Trailing stop triggered at 1R moves SL to breakeven immediately
-- After breakeven trail by 20 pips per bar — captures full monthly moves
-- Trailing also reduces losses — once 1R is reached the trade cannot lose
-- One trade per symbol at a time
+**Edge:** Direction at session-open is close to a coin flip, but *when* a
+breakout is likely is predictable (AUC 0.75, 4 walk-forward folds). Rather
+than guess direction, place a buy-stop + sell-stop straddle at each symbol's
+own best entry hour and let the market pick.
 
-No fixed take profit. The trail handles all exits.
+**Mechanics**
+| Stage | Rule |
+|---|---|
+| Entry | Buy-stop + sell-stop at each symbol's fixed trigger hour (OCO — first fill cancels the other) |
+| SL | Fixed distance: 25 pips (FX) / $20 (XAU) / $0.12 (XAG) / $600 (BTC) |
+| Exit | Breakeven at trigger, then trail from 1R — no fixed TP |
+| Max hold | Adaptive: force-close 1h before the symbol's *own next* trigger, capped so it never bridges a weekend (except BTC, which trades 7 days/week) |
+| Breaker | **Cross-pair**: pauses all new entries if 2+ symbols each show 2+ consecutive losses. Hard fallback — never pauses longer than 10h, so it can't freeze permanently. A per-pair breaker was tested and made results worse. |
 
----
+**Symbols & validated trigger hours (2024–2026 backtest, Exness M15, $90 start, 1% risk)**
 
-## 📊 Backtest Results (Exness spreads, Jun 2024 – Jun 2026)
+| Symbol | Hour (UTC) | Trades | Win% | Result |
+|---|---|---|---|---|
+| EURUSDm | 08:00 | 503 | 51.1% | 567 pips |
+| USDJPYm | 08:00 | 513 | 54.0% | 2,823 pips |
+| GBPUSDm | 04:00 | 504 | 51.0% | 1,173 pips (nearly doubled vs. flat-24h-cap version's 625p) |
+| XAUUSDm | 01:00 | 473 | 60.0% | $2,460.45 (best of a 22-hour sweep) |
+| BTCUSDm | 15:00 | 512 | 56.6% | $789.25 (no cross-asset confirmation, held up on train/test split + year-normalized checks) |
 
-| Pair | Trades | Win rate | Net pips | Net $ (0.01 lots) | Entry weeks |
-|------|--------|----------|----------|-------------------|-------------|
-| EURUSDm | 124 | 44% | +1,182p | +$118 | Week 1 + 2 |
-| USDJPYm | 78 | 50% | +3,541p | +$273 | Week 1 only |
-| **Combined** | **202** | | **+4,723p** | **+$391** | |
+GBPUSD deliberately does **not** use 08:00 UTC — UK data releases 06:00–07:00 UTC,
+so 04:00 sits ahead of the catalyst while 08:00 only catches the retest.
 
-Trail settings: trigger at 1R, trail 20 pips after BE.
+**Gating flags (enabled with caveats)**
+- `GOLD_ENABLED = True` — min balance $2,000 (SL=$20 → ~22% of a $90 account at the 0.01 lot floor)
+- `BTC_ENABLED = True` — min balance $600. **Contract size unverified** — assumes 1.0 lot = 1 BTC. Check `mt5.symbol_info("BTCUSDm").trade_contract_size` on the real account.
+- `SILVER_ENABLED = True` — min balance $300. **Contract size unverified** — assumes 1.0 lot = 5,000 oz. Same check needed for XAGUSDm.
 
----
+**Recent fixes baked into this revision**
+- XAGUSDm config was missing `pip` (silently fell back to FX default 0.0001, would've placed both legs on top of price) and `cancel_hour` (KeyError crash).
+- `_get_tick()` now always calls `symbol_select()` first — root cause of a live GBPUSDm 04:00 miss: `symbol_info_tick()` returns `None` for symbols not in Market Watch, it doesn't auto-add them.
+- `_safe_order_send()` wraps every `order_send()` call — a `None` return (AutoTrading off, bad filling mode, dropped connection) used to crash on `.retcode`.
+- Floating-point rounding fix for the breakeven/trail SL comparison (was silently re-attempting the same BE move forever).
 
-## 🕒 Entry Windows
-
-### EURUSDm — Week 1 and Week 2 of month, Mon–Thu
-
-| Window | UTC | WAT (UTC+1) |
-|--------|-----|-------------|
-| London open | 07:00–08:00 | 08:00–09:00 |
-| NY overlap | 13:00–14:00 | 14:00–15:00 |
-
-### USDJPYm — Week 1 of month only, Mon–Thu
-
-| Window | UTC | WAT (UTC+1) |
-|--------|-----|-------------|
-| Tokyo open | 00:00 | 01:00 |
-| London open | 07:00–08:00 | 08:00–09:00 |
-| NY overlap | 13:00–14:00 | 14:00–15:00 |
-
-**Week of month:** Day 1–7 = Week 1, Day 8–14 = Week 2, Day 15+ = no trade.
-
-**Note on the straddle bot's own EURUSDm/USDJPYm trigger hours (08:00 UTC for
-both):** this strategy's London-open window (07:00–08:00 UTC) sits directly
-adjacent to that. Worth being aware that on any Mon–Thu in Week 1–2 of the
-month, both strategies could be evaluating entries on the same pair within
-roughly the same hour — not a bug in either one, just a real timing proximity
-worth knowing about given the overlap already flagged above.
+**Open TODOs**
+- [ ] Verify `trade_contract_size` for BTCUSDm and XAGUSDm before trusting position sizes.
+- [ ] Re-check gold sizing math once account balance actually supports it.
 
 ---
 
-## 🚫 No-Trade Rules
+## 2. `news_spike_strategy.py` — Scheduled-Release Spike
 
-- November and December — volatility too low
-- Week 3 and Week 4 of every month — trend exhausts, reversals increase
-- Friday — no new entries, hard close any open trade at 14:00 UTC (15:00 WAT)
-- 21:00–23:00 UTC — spread too wide
-- Weekends — never
+**Edge:** Straddle at NFP/CPI/FOMC release, but simplified exit: **no TP, no
+reload chain** — a hard 1-minute force-close, win or lose, then done for that
+event (no re-entry even if time remains).
 
----
+**Mechanics**
+| Stage | Rule |
+|---|---|
+| Entry | Buy-stop + sell-stop, placed **only** in a 5-second pre-release window (stored schedule times are 5s early; window opens at the stored time and closes hard at the real release — no post-release retry) |
+| SL | Real per-symbol stop, can trigger before the 1-min mark |
+| Exit | Hard 60s force-close, whichever comes first (SL or timer) |
+| Sizing | Per-symbol `risk_pct`, computed live from `trade_tick_value`/`trade_tick_size`, clamped to broker min/max/step |
+| Flatten | Any position/pending order on the symbol (any magic) is flattened 10 minutes before release — handles the fact that shared symbols also carry `straddle_strategy.py`'s (different-magic) positions |
 
-## ⚙️ Entry Logic (all must pass in order)
+**Validation status**
 
-1. Symbol is configured (EURUSDm or USDJPYm)
-2. Current month is not November or December
-3. Current day is Mon–Thu (Friday blocked)
-4. Current hour is in the allowed window for this symbol
-5. Current date is in Week 1 or 2 (EURUSDm) or Week 1 only (USDJPYm)
-6. Prior month closed above its open → **BUY** | below → **SELL**
-7. Structural SL (prior day low for buys, prior day high for sells) ≥ 35 pips
-8. Strategy not paused (monthly failure or regime monitor)
+| Symbol | Status |
+|---|---|
+| **XAUUSDm** | **Validated** — 2024-01-02 to 2025-12-05, minute-level, control-tested: NFP 59.1%, CPI 54.5%, FOMC 66.7% win rate, all beat random-time controls |
+| XAGUSDm | Unvalidated — offset/SL guessed by scaling off gold |
+| XCUUSDm | Single anecdote only — one NFP event (2026-08-07): +$29.89/lot, no SL touch. FOMC leg untestable (data gap) |
 
-No M15 candle condition. No EMA. No body ratio. No weekly confirmation.
-The monthly bias alone determines direction.
+As of 2026-09-04, the four FX pairs (EURUSDm, GBPUSDm, USDJPYm, USDCADm) were
+**removed entirely** — strategy now trades only XAUUSDm / XAGUSDm / XCUUSDm.
+Risk budget was redistributed to preserve the original 33.2143% total across
+just these three (XAU 14.04% / XAG 14.04% / XCU 5.26%) rather than shrinking it.
 
----
+**Why the entry window changed to "pre-release only, 5s early" (2026-09-04)**
+Live rejections at the exact release moment (`"Invalid price"`, retcode 10006)
+traced to two compounding effects that only exist *at/after* release:
+1. the anchor price can move between being read and the order reaching the broker during the spike, and
+2. brokers widen `trade_stops_level` dynamically the instant high-impact volatility hits.
 
-## 🛡️ Trade Management
+Placing the straddle as a **resting** order 5s before release sidesteps both,
+since stop-distance validation happens at placement time, not continuously.
+This requires ~1s main-loop polling — slower polling risks stepping over the
+5-second window entirely.
 
-| Event | Action |
-|-------|--------|
-| Price reaches 1R | Move SL to breakeven — trade now risk-free |
-| After breakeven | Trail SL by 20 pips tracking best price |
-| Friday 14:00 UTC (15:00 WAT) | Hard close — no weekend holds |
-| SL hit by MT5 | Clear trade state, look for next signal |
+**Other fixes baked into this revision**
+- `has_open_position()` / `has_own_open_trade()` — magic-filtered, so the main
+  loop's routing no longer mistakes another strategy's position on a shared
+  symbol for "already open" and skips `check_and_place()` (which also skipped
+  the flatten logic).
+- Unconditional final flatten check immediately before order placement, independent of the window-based flatten timing.
+- Lot sizing pulls live tick value/size instead of a static guess table (previously off by orders of magnitude, e.g. USDJPYm computing 42 lots).
 
-**SL is never widened. Never add to a position. No fixed TP.**
-
----
-
-## 🔒 Protection Systems
-
-### Monthly failure tracker
-If 3 losses occur during active weeks in the same month, the strategy skips
-all remaining entries for that symbol for the rest of the month.
-Resets automatically on the 1st of each new month.
-
-### Rolling regime monitor
-Tracks last 6 trades across all symbols. If fewer than 2 wins in the last 6,
-strategy pauses all entries until the win rate recovers.
-
-**Note:** both of these protections are scoped to THIS strategy's own trades
-only (filtered by its own MAGIC number, once that's added — see the
-Concurrent Operation section above). They cannot see or react to the straddle
-bot's win/loss streaks on the same pairs, and vice versa.
+**Status:** demo/paper only across all symbols — do not run on real money yet.
 
 ---
 
-## 💰 Position Sizing
-
-```
-lot = (balance × risk_pct%) / (sl_pips × pip_value_per_lot)
-minimum lot = 0.01
-```
-
-Default risk: **1% per trade**. One position per symbol at a time **for this
-strategy** — this does not account for a simultaneous straddle-bot position on
-the same symbol; see Concurrent Operation above.
-
-At $9 account: expect $3–10 loss / $6–30 gain per trade at 0.01 lots.
-At $100 account: lot sizing formula kicks in properly.
-
----
-
-## 🔧 Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `risk_pct` | 1.0 | % of balance risked per trade |
-| `min_sl_pips` | 35.0 | Minimum structural SL distance |
-| `trail_trigger_r` | 1.0 | Move to breakeven at this R level |
-| `trail_pips` | 20.0 | Trail distance after breakeven (pips) |
-
----
-
-## ⚙️ Symbol Configuration
-
-```python
-SYMBOL_CONFIG = {
-    "EURUSDm": {
-        "pip":         0.0001,
-        "spread":      0.00008,              # 8 points (Exness)
-        "sl_buffer":   0.0003,
-        "entry_weeks": [1, 2],               # Week 1 and 2 of month
-        "entry_hours": [7, 8, 13, 14],       # London open + NY overlap
-    },
-    "USDJPYm": {
-        "pip":         0.01,
-        "spread":      0.018,                # 18 points (Exness)
-        "sl_buffer":   0.03,
-        "entry_weeks": [1],                  # Week 1 only
-        "entry_hours": [0, 7, 8, 13, 14],   # Tokyo + London + NY overlap
-    },
-}
-```
-
----
-
-## 📁 Usage
-
-```python
-strategy = MonthlyTrendStrategy(
-    risk_pct=1.0,
-    min_sl_pips=35.0,
-    trail_trigger_r=1.0,
-    trail_pips=20.0,
-    backtest_mode=False,
-    initial_balance=100.0,
-)
-
-# Entry — call on every M15 bar close
-signal = strategy.generate_signal("EURUSDm")
-if signal["signal"]:
-    # place order: signal["entry_price"], ["stop_loss"], ["lot_size"]
-    # take_profit is None — trail manages the exit
-
-# Trade management — call on every M15 bar close while trade is open
-status = strategy.manage_open_trade("EURUSDm")
-
-# When trade closes (SL hit or trail exit)
-strategy.record_result("EURUSDm", was_win=True, current_month=6)
-
-# New month reset
-strategy.reset_month("EURUSDm", new_month=7)
-
-# Check status
-print(strategy.get_performance_summary("EURUSDm"))
-```
-
----
-
-## 📦 Data Fetched Internally per Symbol
-
-| Timeframe | Bars | Purpose |
-|-----------|------|---------|
-| M15 | 300 | Entry timing |
-| D1 | 5 | Structural SL (prior day high/low) |
-| MN1 | 3 | Monthly bias direction |
-
-No external data needed. Pass only the symbol.
-
----
-
-## ⚠️ Key Findings from Backtest
-
-- M15 entry conditions (EMA, body ratio, RSI) add no value — removed entirely.
-- Monthly bias follow-through: 58.3% WR on EURUSD over 25 months — the real edge.
-- Week of month is critical: all edge in Weeks 1–2. Weeks 3–4 consistently negative.
-- Trailing at 1R beats fixed 3R by 10x in net pips — captures the large monthly moves.
-- Trailing also eliminates losses on trades that reach 1R then reverse (exit at BE).
-- Exness spreads: EURUSDm 0.8p, USDJPYm 0.18p — negligible cost.
-- GBPUSD, EURJPY, CADJPY all failed — monthly bias WR too low on those pairs.
-- Nov–Dec dead months. Mar, Apr, Jun strongest (+420p, +505p, +439p on EURUSD).
-- USDJPY Week 1 strongest single window across all tests (+3,541p net).
-
----
-
-## 📋 Before Enabling Alongside the Straddle Bot — Checklist
-
-- [ ] Confirm this strategy's actual `.py` code has a unique `MAGIC` number
-      (not `20260716`, `20260801`, `20260807`, or `20260810`), and every
-      position/order read is filtered by it
-- [ ] Confirm the MT5 account is in **hedging mode**, not netting mode
-- [ ] Be aware combined risk on EURUSDm/USDJPYm can reach ~2% on days both
-      strategies fire, not the 1% either one assumes alone
-- [ ] Each strategy still runs as its own separate process/terminal — no
-      shared loop, matching every other strategy in this project
+## Shared conventions
+- Each strategy owns a unique `MAGIC` number (straddle: `20260716`, news spike: `20260807`) so they never mistake each other's positions for their own.
+- Both wrap every `mt5.order_send()` in a helper that checks for `None` before touching `.retcode`.
+- Both re-derive filling mode (`ORDER_FILLING_IOC`/`FOK`/`RETURN`) per call from `symbol_info().filling_mode` rather than hardcoding one mode.
