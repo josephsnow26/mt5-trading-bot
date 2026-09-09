@@ -283,52 +283,75 @@ import MetaTrader5 as mt5
 # FOMC) — do not assume a fixed-rule pattern for any of them; the 2025
 # government shutdown proved that assumption can silently break.
 #
-# *** All timestamps below are stored 5 SECONDS EARLY relative to the real
-# release time (e.g. real NFP release 12:30:00 UTC -> stored as 12:29:55).
-# This is deliberate — see module docstring CHANGE LOG. The real release
-# moment for any entry here is `release_time + 5 seconds`. ***
+# *** All timestamps below are stored 3 SECONDS EARLY relative to the real
+# release time (e.g. real NFP release 12:30:00 UTC -> stored as 12:29:57).
+# CHANGED 2026-09-09: was 5s early (12:29:55) — see module docstring
+# CHANGE LOG. The real release moment for any entry here is
+# `release_time + EARLY_ENTRY_SECONDS` (3 seconds, as of this change).
+#
+# IMPORTANT: these are LITERAL, hand-typed timestamps — NOT computed from
+# EARLY_ENTRY_SECONDS. The entry window OPENS the moment `now >= this
+# value`. EARLY_ENTRY_SECONDS only controls the window's CLOSE and the
+# order expiration calc. If EARLY_ENTRY_SECONDS is ever changed again,
+# every literal below must be manually re-shifted to match, or the
+# window-open time and the code's internal "real release" time drift
+# out of sync with each other (found live 2026-09-09: literals were
+# still 5s-early after EARLY_ENTRY_SECONDS was changed to 3.0, so orders
+# kept firing at the old 5s-early mark instead of the intended 3s).
 # ---------------------------------------------------------------------------
 
 NFP_SCHEDULE_UTC: List[datetime.datetime] = [
-    datetime.datetime(2026, 9, 9, 3, 9, 55, tzinfo=datetime.timezone.utc),  # test
-    datetime.datetime(2026, 10, 2, 12, 29, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 11, 6, 13, 29, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 12, 4, 13, 29, 55, tzinfo=datetime.timezone.utc),
-    # Add next month's date here, 5s EARLY. DST-adjust by hand: 8:30 AM ET
+    datetime.datetime(2026, 9, 9, 12, 29, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 2, 12, 29, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 11, 6, 13, 29, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 4, 13, 29, 57, tzinfo=datetime.timezone.utc),
+    # Add next month's date here, 3s EARLY. DST-adjust by hand: 8:30 AM ET
     # = 12:30:00 UTC during DST (roughly Mar-Nov), 13:30:00 UTC otherwise
-    # -> store as 12:29:55 / 13:29:55 respectively.
+    # -> store as 12:29:57 / 13:29:57 respectively.
 ]
 
 CPI_SCHEDULE_UTC: List[datetime.datetime] = [
-    datetime.datetime(2026, 9, 11, 12, 29, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 10, 14, 12, 29, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 11, 10, 13, 29, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 12, 10, 13, 29, 55, tzinfo=datetime.timezone.utc),
-    # Same 8:30 AM ET / DST rule as NFP, stored 5s EARLY. Check
+    datetime.datetime(2026, 9, 9, 12, 29, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 14, 12, 29, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 11, 10, 13, 29, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 10, 13, 29, 57, tzinfo=datetime.timezone.utc),
+    # Same 8:30 AM ET / DST rule as NFP, stored 3s EARLY. Check
     # bls.gov/schedule/news_release/cpi.htm
 ]
 
 FOMC_SCHEDULE_UTC: List[datetime.datetime] = [
-    datetime.datetime(2026, 9, 16, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 10, 28, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2026, 12, 9, 18, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 1, 27, 18, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 3, 17, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 4, 28, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 6, 9, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 7, 28, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 9, 15, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 10, 27, 17, 59, 55, tzinfo=datetime.timezone.utc),
-    datetime.datetime(2027, 12, 8, 18, 59, 55, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 9, 16, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 10, 28, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2026, 12, 9, 19, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 1, 27, 19, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 3, 17, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 4, 28, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 6, 9, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 7, 28, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 9, 15, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 10, 27, 18, 0, 57, tzinfo=datetime.timezone.utc),
+    datetime.datetime(2027, 12, 8, 19, 0, 57, tzinfo=datetime.timezone.utc),
     # Decision time is 2:00 PM ET = 18:00:00 UTC during DST, 19:00:00 UTC
-    # otherwise -> stored 5s EARLY as 17:59:55 / 18:59:55 respectively.
+    # otherwise -> stored 3s EARLY as 18:00:57 / 19:00:57 respectively.
+    # NOTE the minute rollover at 3s-early: these now land at :00:57 in
+    # the NEXT minute, not :59:55 in the prior minute as they did at 5s
+    # early — easy to mis-type, double check the minute when adding dates.
     # Add each new year's dates in one go once the Fed publishes them.
 ]
 
 # Real release time = stored schedule time + this. Kept as a named constant
 # so every place in the file that needs to reason about the REAL moment
 # (vs. the deliberately-early stored one) references the same value.
-EARLY_ENTRY_SECONDS = 5.0
+#
+# CHANGED 2026-09-09: 5.0 -> 3.0. NOTE (carried over from discussion, not
+# re-litigated here): this does NOT reduce slippage — the mechanism that
+# causes slippage happens in the seconds AFTER the real release triggers
+# the order, not in how many seconds early the resting order was placed.
+# A narrower window only raises the odds a poll cycle steps over it and
+# misses the entry entirely (main loop's tight-polling band still needs
+# to reliably land inside this now-narrower window). Left as Joseph's
+# explicit call — flagged, not blocking.
+EARLY_ENTRY_SECONDS = 3.0
 
 # Maximum acceptable slippage (in points) on the exits THIS FILE controls
 # directly (force-close, pre-event flatten) — TRADE_ACTION_DEAL requests
@@ -413,8 +436,14 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
         # tick data showed this is a price level, not an enforced payment
         # cap — see module docstring. Left as-is; sizing (risk_pct) is the
         # lever being used to manage that risk instead, see below.
-        "risk_pct": 7.0,  # flat 2026-09-08 (was 14.04%) — of 14% total budget across
-        # the 2 remaining symbols (was ~33.3% across 3, incl. copper)
+        "risk_pct": 7.0,  # <<< PLACEHOLDER — CHANGE TO 2.0 AFTER 2 MORE LIVE TESTS >>>
+        # flat 2026-09-08 (was 14.04%) — of 14% total budget across
+        # the 2 remaining symbols (was ~33.3% across 3, incl. copper).
+        # Plan (2026-09-09): step down to 2.0 once the current 7% config
+        # has been validated across two more live test runs. At current
+        # balances (~$90-373), 2% and 3.34% land on the same lot-floor
+        # trade (0.01 min lot) — see 2026-09-09 discussion — so this
+        # mainly matters once balance grows past that floor threshold.
         "decimals": 2,
         "max_hold_seconds": 60.0,
     },
@@ -423,7 +452,8 @@ SYMBOL_CONFIG: Dict[str, Dict[str, Any]] = {
         "point_size": 0.001,
         "offset": 0.06,  # $ — widened again from 0.05 (2026-09-04, 20%) — UNCALIBRATED
         "sl": 0.09,  # $ — widened again from 0.07 (2026-09-04, ~29%) — UNCALIBRATED
-        "risk_pct": 7.0,  # flat 2026-09-08 (was 14.04%) — same rationale as XAUUSDm
+        "risk_pct": 7.0,  # <<< PLACEHOLDER — CHANGE TO 2.0 AFTER 2 MORE LIVE TESTS >>>
+        # flat 2026-09-08 (was 14.04%) — same rationale as XAUUSDm
         "decimals": 3,
         "max_hold_seconds": 60.0,
     },
@@ -1010,12 +1040,8 @@ if __name__ == "__main__":
             f"  Next (stored, 5s early): {min(future) if future else 'NONE — add dates'}"
         )
     print()
-    print(
-        "*** XAUUSDm backed by real, control-tested 1-min data + 1 real tick-level walkthrough ***"
-    )
-    print(
-        "*** XAGUSDm: structural extension only, minimal backtest, 1 tick-level walkthrough (unconfirmed contract spec) ***"
-    )
+    print("*** XAUUSDm backed by real, control-tested 1-min data + 1 real tick-level walkthrough ***")
+    print("*** XAGUSDm: structural extension only, minimal backtest, 1 tick-level walkthrough (unconfirmed contract spec) ***")
     print("*** Copper (XCUUSDm) removed 2026-09-08 — see CHANGE LOG ***")
     print(
         f"*** Entry window: pre-release only ({EARLY_ENTRY_SECONDS:.0f}s early -> real release), no retry after ***"
